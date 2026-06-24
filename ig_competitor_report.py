@@ -42,7 +42,7 @@ def scrape_instagram_data() -> str:
     run = client.actor("apify/instagram-scraper").call(run_input=run_input)
     
     scraped_text = ""
-    for item in client.dataset(run.default_dataset_id).iterate_items():
+    for item in client.dataset(run["defaultDatasetId"]).iterate_items():
         owner = item.get("ownerUsername", "Unknown")
         caption = item.get("caption", "")
         likes = item.get("likesCount", 0)
