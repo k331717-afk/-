@@ -21,11 +21,11 @@ jobs:
     - name: 필요 패키지 설치 (직접 설치)
       run: |
         python -m pip install --upgrade pip
-        pip install apify-client google-generativeai requests python-dotenv
+        pip install google-generativeai requests python-dotenv
 
     - name: 1. 인스타그램 경쟁사 리포트 실행
       env:
-        APIFY_API_TOKEN: ${{ secrets.APIFY_API_TOKEN }}
+        RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         NOTION_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
         NOTION_CONTENT_DB_ID: ${{ secrets.NOTION_CONTENT_DB_ID }}
@@ -33,6 +33,8 @@ jobs:
 
     - name: 2. 메타 광고 리포트 실행
       env:
+        RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         NOTION_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
         NOTION_META_AD_DB_ID: ${{ secrets.NOTION_META_AD_DB_ID }}
       run: python meta_ad_report.py
