@@ -1,39 +1,38 @@
-name: weekly-competitor-report
+name: Weekly Competitor Report
 
 on:
+  workflow_dispatch: # Actions 탭에서 수동으로 'Run workflow' 버튼을 누를 수 있게 해줍니다.
   schedule:
-    - cron: '0 0 * * 1'
-  workflow_dispatch:
+    - cron: '0 0 * * 1' # 매주 월요일 오전 9시 (KST 기준)에 자동 실행됩니다.
 
 jobs:
-  run-reports:
+  run-scripts:
     runs-on: ubuntu-latest
 
     steps:
-      - name: checkout
-        uses: actions/checkout@v3
+    - name: 저장소 코드 불러오기
+      uses: actions/checkout@v3
 
-      - name: setup-python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
+    - name: 파이썬 환경 세팅
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
 
-      - name: install-packages
-        run: pip install apify-client google-generativeai python-dotenv requests
+    - name: 필요 패키지 설치 (requirements.txt)
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
 
-      - name: run-instagram-report
-        env:
-          APIFY_API_TOKEN: ${{ secrets.APIFY_API_TOKEN }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
-          NOTION_CONTENT_DB_ID: ${{ secrets.NOTION_CONTENT_DB_ID }}
-        run: python ig_competitor_report.py
+    - name: 1. 인스타그램 경쟁사 리포트 실행
+      env:
+        APIFY_API_TOKEN: ${{ secrets.APIFY_API_TOKEN }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        NOTION_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
+        NOTION_CONTENT_DB_ID: ${{ secrets.NOTION_CONTENT_DB_ID }}
+      run: python ig_competitor_report.py
 
-      - name: run-meta-ad-report
-        env:
-          APIFY_API_TOKEN: ${{ secrets.APIFY_API_TOKEN }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
-          NOTION_META_AD_DB_ID: ${{ secrets.NOTION_META_AD_DB_ID }}
-        run: python meta_ad_report.py
-
+    - name: 2. 메타 광고 리포트 실행
+      env:
+        NOTION_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
+        NOTION_META_AD_DB_ID: ${{ secrets.NOTION_META_AD_DB_ID }}
+      run: python meta_ad_report.py
