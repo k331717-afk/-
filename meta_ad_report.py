@@ -1,67 +1,54 @@
 import os
 import requests
+import json
 from dotenv import load_dotenv
-from apify_client import ApifyClient
 import google.generativeai as genai
 
 load_dotenv()
 
-APIFY_TOKEN = os.environ.get("APIFY_API_TOKEN")
+RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 NOTION_TOKEN = os.environ.get("NOTION_API_TOKEN")
 NOTION_CONTENT_DB_ID = os.environ.get("NOTION_META_AD_DB_ID")
 
-COMPETITOR_URLS = [
-    "https://www.facebook.com/konny.by.erin",
-    "https://www.facebook.com/apricotstudios.co.kr",
-    "https://www.facebook.com/100076376673060",
-    "https://www.facebook.com/61551768921927",
-    "https://www.facebook.com/moomooz_essential",
-    "https://www.facebook.com/ozkizkorea",
+# 검색할 타겟 키워드 셋
+SEARCH_TERMS = [
+    "konny.by.erin",
+    "apricotstudios.co.kr",
+    "100076376673060",
+    "61551768921927",
+    "moomooz_essential",
+    "ozkizkorea",
 ]
 
 def scrape_all_competitors() -> str:
-    print("📡 Apify로 Meta 광고 라이브러리 수집 시작... (약 2~3분 소요)")
-    client = ApifyClient(APIFY_TOKEN)
-
-    run_input = {
-        "mode": "page-ads",
-        "searchTerms": [
-            "konny.by.erin",
-            "apricotstudios.co.kr",
-            "100076376673060",
-            "61551768921927",
-            "moomooz_essential",
-            "ozkizkorea",
-        ],
-        "maxItems": 30,
-        "country": "KR",
-        "adStatus": "ALL",
+    print("📡 RapidAPI로 Meta 광고 라이브러리 수집 시작...")
+    
+    url = "https://facebook-ads-library-scraper-api.p.rapidapi.com/search" 
+    headers = {
+        "x-rapidapi-host": "facebook-ads-library-scraper-api.p.rapidapi.com",
+        "x-rapidapi-key": RAPIDAPI_KEY
     }
 
-    run = client.actor("unseenuser/meta-ads").call(run_input=run_input)
-
     all_text = ""
-    current_page = ""
 
-    for item in client.dataset(run.default_dataset_id).iterate_items():
-        page_name = item.get("pageName") or item.get("advertiserName") or item.get("page_name", "Unknown")
-        body      = item.get("body") or item.get("adCreativeBody") or item.get("text") or ""
-        title     = item.get("title") or item.get("adCreativeLinkTitle") or ""
-        start     = item.get("startDate") or item.get("adDeliveryStartTime") or "날짜 미상"
-        snap      = item.get("snapshotUrl") or item.get("adSnapshotUrl") or ""
-
-        if page_name != current_page:
-            current_page = page_name
-            all_text += f"\n=== {page_name} ===\n"
-
-        all_text += f"- 집행 시작: {start}\n"
-        if title:
-            all_text += f"  제목: {title}\n"
-        all_text += f"  본문: {body[:200]}\n"
-        if snap:
-            all_text += f"  미리보기: {snap}\n"
-        all_text += "\n"
+    for term in SEARCH_TERMS:
+        print(f"📢 [{term}] 광고 데이터 가져오는 중...")
+        querystring = {
+            "keyword": term,
+            "country": "KR"
+        }
+        
+        try:
+            # GET 방식으로 RapidAPI 요청
+            response = requests.get(url, headers=headers, params=querystring)
+            response.raise_for_status()
+            data = response.json()
+            
+            all_text += f"\n=== {term} ===\n"
+            all_text += f"광고 수집 데이터 요약: {json.dumps(data, ensure_ascii=False)[:1500]}\n\n"
+        except Exception as e:
+            print(f"❌ {term} 광고 수집 실패: {e}")
 
     print("✅ 전체 수집 완료!")
     return all_text
@@ -167,7 +154,7 @@ def upload_to_notion(analysis_text: str):
                 "quote": {"rich_text": [{"type": "text", "text": {"content": text_content}}]}
             })
         else:
-            is_bullet = line.startswith("* ") or line.startswith("- ")
+            is_bullet = line.startswith(" * ") or line.startswith("- ") or line.startswith("* ")
             clean_text = line.lstrip("*- ").strip()
             block_type = "bulleted_list_item" if is_bullet else "paragraph"
 
