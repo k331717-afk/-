@@ -1,9 +1,9 @@
 name: Weekly Competitor Report
 
 on:
-  workflow_dispatch: # Actions 탭에서 수동으로 'Run workflow' 버튼을 누를 수 있게 해줍니다.
+  workflow_dispatch: # 수동 실행 버튼
   schedule:
-    - cron: '0 0 * * 1' # 매주 월요일 오전 9시 (KST 기준)에 자동 실행됩니다.
+    - cron: '0 0 * * 1' # 매주 월요일 자동 실행
 
 jobs:
   run-scripts:
@@ -18,7 +18,7 @@ jobs:
       with:
         python-version: '3.10'
 
-    - name: 필요 패키지 설치 (직접 설치)
+    - name: 필요 패키지 설치
       run: |
         python -m pip install --upgrade pip
         pip install google-generativeai requests python-dotenv
@@ -27,7 +27,7 @@ jobs:
       env:
         RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        NOTION_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
+        NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }} # [수정 완료] 이름표 매칭 통일
         NOTION_CONTENT_DB_ID: ${{ secrets.NOTION_CONTENT_DB_ID }}
       run: python ig_competitor_report.py
 
@@ -35,6 +35,6 @@ jobs:
       env:
         RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        NOTION_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
+        NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }} # [수정 완료] 이름표 매칭 통일
         NOTION_META_AD_DB_ID: ${{ secrets.NOTION_META_AD_DB_ID }}
       run: python meta_ad_report.py
