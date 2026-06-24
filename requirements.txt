@@ -1,0 +1,4 @@
+apify-client
+google-generativeai
+requests
+python-dotenv
