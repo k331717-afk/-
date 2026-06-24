@@ -58,7 +58,7 @@ def scrape_instagram_data() -> str:
             scraped_text += f"- 프로필 요약 데이터: {json.dumps(data, ensure_ascii=False)[:1000]}\n\n"
             
             # API 과부하 방지를 위한 임시 휴식
-            time.sleep(1)
+            time.sleep(5)
         except Exception as e:
             print(f"❌ {username} 데이터 수집 실패: {e}")
         
