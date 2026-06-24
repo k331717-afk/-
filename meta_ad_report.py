@@ -24,20 +24,31 @@ SEARCH_TERMS = [
 def scrape_all_competitors() -> str:
     print("📡 RapidAPI로 Meta 광고 라이브러리 수집 시작...")
     
-    url = "https://facebook-ads-library-scraper-api.p.rapidapi.com/search" 
-    headers = {
-        "x-rapidapi-host": "facebook-ads-library-scraper-api.p.rapidapi.com",
-        "x-rapidapi-key": RAPIDAPI_KEY
-    }
+# 1. 진짜 광고 수집 주소로 변경
+url = "https://facebook-ads-library-scraper-api.p.rapidapi.com/search/ads"
 
-    all_text = ""
+# 2. curl에 적혀있던 헤더 설정 (API 키는 깃허브 Secrets 보안 유지)
+headers = {
+    "Content-Type": "application/json",
+    "x-rapidapi-host": "facebook-ads-library-scraper-api.p.rapidapi.com",
+    "x-rapidapi-key": os.environ.get("RAPIDAPI_KEY")  # 깃허브 세팅값 그대로 사용
+}
 
-    for term in SEARCH_TERMS:
-        print(f"📢 [{term}] 광고 데이터 가져오는 중...")
-        querystring = {
-            "keyword": term,
-            "country": "KR"
-        }
+# 3. curl에 있던 필수 옵션들 파이썬 형태로 변환
+# (기존 'keyword' 대신 'query'를 사용해야 합니다!)
+querystring = {
+    "query": competitor,                 # 루프 돌고 있는 경쟁사 이름 변수명
+    "search_type": "keyword_unordered",
+    "ad_type": "all",
+    "status": "ACTIVE",                  # 현재 집행 중인 광고만
+    "country": "KR",                     # 대한민국 광고 데이터 기준 (ALL에서 KR로 변경 추천)
+    "media_type": "ALL",
+    "sort_by": "total_impressions",
+    "trim": "false"
+}
+
+# 4. API 요청 보내기
+response = requests.get(url, headers=headers, params=querystring)
         
         try:
             # GET 방식으로 RapidAPI 요청
