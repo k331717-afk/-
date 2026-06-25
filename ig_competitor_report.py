@@ -5,44 +5,19 @@ from google import genai
 
 load_dotenv()
 
-# 🚨 변경: RapidAPI 대신 메타 공식 토큰을 사용합니다.
 META_ACCESS_TOKEN = os.environ.get("META_ACCESS_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 NOTION_TOKEN = os.environ.get("NOTION_API_TOKEN")
 NOTION_CONTENT_DB_ID = os.environ.get("NOTION_CONTENT_DB_ID")
+
+# ✨ 대표님이 찾아오신 인스타그램 비즈니스 ID를 직접 박아넣습니다!
+MY_IG_ID = "17841408849647327"
 
 COMPETITORS = [
     "konny_kr", "moomooz_essential", "bonats.official",
     "bebedepino", "_bobochoses_", "benebene_official",
     "detamy_project", "apricotstudios_"
 ]
-
-def get_my_ig_user_id():
-    """토큰을 이용해 내 인스타그램 비즈니스 계정 ID를 자동 추적합니다."""
-    print("🔍 내 인스타그램 비즈니스 계정 ID 찾는 중...")
-    url = "https://graph.facebook.com/v19.0/me/accounts"
-    params = {
-        "fields": "instagram_business_account",
-        "access_token": META_ACCESS_TOKEN
-    }
-    
-    try:
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        data = response.json().get("data", [])
-        
-        for page in data:
-            if "instagram_business_account" in page:
-                ig_id = page["instagram_business_account"]["id"]
-                print(f"✅ 내 인스타그램 ID 찾기 성공! (ID: {ig_id})")
-                return ig_id
-                
-        print("❌ 연결된 인스타그램 비즈니스 계정을 찾을 수 없습니다. 페이스북 페이지와 인스타그램이 잘 연결되어 있는지 확인해주세요.")
-        return None
-        
-    except Exception as e:
-        print(f"❌ 내 계정 정보 불러오기 실패: {e}")
-        return None
 
 def scrape_instagram_data_official(ig_user_id) -> str:
     print("🕵️ Meta 공식 API 출동! 429 에러 없이 당당하게 긁어오는 중...")
@@ -54,7 +29,7 @@ def scrape_instagram_data_official(ig_user_id) -> str:
     for username in COMPETITORS:
         print(f"📸 [{username}] 게시물 가져오는 중...")
         
-        # Business Discovery를 이용한 합법적이고 빠른 데이터 요청!
+        # Business Discovery를 이용한 합법적이고 빠른 데이터 요청
         params = {
             "fields": f"business_discovery.username({username}){{followers_count,media_count,media.limit(6){{comments_count,like_count,caption}}}}",
             "access_token": META_ACCESS_TOKEN
@@ -198,11 +173,10 @@ def main():
         print("❌ 에러: META_ACCESS_TOKEN 환경변수가 설정되지 않았습니다.")
         return
 
-    my_ig_id = get_my_ig_user_id()
-    if not my_ig_id:
-        return
-
-    scraped_data = scrape_instagram_data_official(my_ig_id)
+    print(f"✅ 내 인스타그램 ID({MY_IG_ID})로 바로 탐색을 시작합니다!")
+    
+    # 🚨 에러가 났던 계정 찾기 함수를 빼버리고, 직접 ID를 넣어서 실행합니다.
+    scraped_data = scrape_instagram_data_official(MY_IG_ID)
     if not scraped_data:
         return 
 
