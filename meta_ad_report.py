@@ -34,8 +34,16 @@ def scrape_meta_ads_data() -> str:
     for company in COMPETITORS:
         print(f"📢 [{company}] 광고 수집 중...")
         # GET 방식이므로 params로 검색어를 넘깁니다. (API 파라미터명에 따라 'query'나 'company_name'으로 수정 필요할 수 있음)
-        querystring = {"query": company} 
+        # ❌ 기존 문제의 코드:
+        # querystring = {"query": company}
 
+        #   아래 코드로 수정해 주세요!
+        querystring = {
+            "companyName": company,   # 'query'를 'companyName'으로 변경했습니다.
+            "status": "ACTIVE",       # 현재 광고 중인 것만 수집
+            "country": "KR",          # 코니(konny_kr) 광고를 보시려면 한국("KR")으로 설정하는 것이 좋습니다. (전체는 "ALL")
+            "sort_by": "total_impressions"  # 노출수 높은 순 정렬
+        }
         try:
             response = requests.get(url, headers=headers, params=querystring)
             response.raise_for_status()
