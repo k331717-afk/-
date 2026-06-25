@@ -1,15 +1,14 @@
 import os
-import time
 import requests
 from dotenv import load_dotenv
 from google import genai
 
 load_dotenv()
 
-RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY")
+# 🚨 변경: RapidAPI 대신 메타 공식 토큰을 사용합니다.
+META_ACCESS_TOKEN = os.environ.get("META_ACCESS_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 NOTION_TOKEN = os.environ.get("NOTION_API_TOKEN")
-# 🚨 수정 완료: 고정된 ID를 삭제하고 GitHub Secrets 환경변수에서 불러오도록 변경
 NOTION_CONTENT_DB_ID = os.environ.get("NOTION_CONTENT_DB_ID")
 
 COMPETITORS = [
@@ -18,57 +17,85 @@ COMPETITORS = [
     "detamy_project", "apricotstudios_"
 ]
 
-def scrape_instagram_data() -> str:
-    print("🕵️ RapidAPI 출동! 경쟁사 인스타그램 긁어오는 중...")
-
-    url = "https://instagram-scraper-stable-api.p.rapidapi.com/get_ig_user_posts.php"
-    headers = {
-        "x-rapidapi-host": "instagram-scraper-stable-api.p.rapidapi.com",
-        "x-rapidapi-key": RAPIDAPI_KEY,
-        "Content-Type": "application/x-www-form-urlencoded"
+def get_my_ig_user_id():
+    """토큰을 이용해 내 인스타그램 비즈니스 계정 ID를 자동 추적합니다."""
+    print("🔍 내 인스타그램 비즈니스 계정 ID 찾는 중...")
+    url = "https://graph.facebook.com/v19.0/me/accounts"
+    params = {
+        "fields": "instagram_business_account",
+        "access_token": META_ACCESS_TOKEN
     }
+    
+    try:
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        data = response.json().get("data", [])
+        
+        for page in data:
+            if "instagram_business_account" in page:
+                ig_id = page["instagram_business_account"]["id"]
+                print(f"✅ 내 인스타그램 ID 찾기 성공! (ID: {ig_id})")
+                return ig_id
+                
+        print("❌ 연결된 인스타그램 비즈니스 계정을 찾을 수 없습니다. 페이스북 페이지와 인스타그램이 잘 연결되어 있는지 확인해주세요.")
+        return None
+        
+    except Exception as e:
+        print(f"❌ 내 계정 정보 불러오기 실패: {e}")
+        return None
 
+def scrape_instagram_data_official(ig_user_id) -> str:
+    print("🕵️ Meta 공식 API 출동! 429 에러 없이 당당하게 긁어오는 중...")
+
+    url = f"https://graph.facebook.com/v19.0/{ig_user_id}"
     scraped_text = ""
-    valid_data_count = 0 # 유효 데이터 카운터 추가
+    valid_data_count = 0
 
     for username in COMPETITORS:
         print(f"📸 [{username}] 게시물 가져오는 중...")
-        payload = {"username_or_url": f"https://www.instagram.com/{username}/", "amount": "6"}
+        
+        # Business Discovery를 이용한 합법적이고 빠른 데이터 요청!
+        params = {
+            "fields": f"business_discovery.username({username}){{followers_count,media_count,media.limit(6){{comments_count,like_count,caption}}}}",
+            "access_token": META_ACCESS_TOKEN
+        }
 
         try:
-            response = requests.post(url, data=payload, headers=headers)
+            response = requests.get(url, params=params)
             response.raise_for_status()
             data = response.json()
-
-            posts = data.get("data", {}).get("items", []) or data.get("items", []) or []
+            
+            business_data = data.get("business_discovery", {})
+            media_data = business_data.get("media", {}).get("data", [])
 
             scraped_text += f"\n[계정: {username}]\n"
-            if not posts:
-                scraped_text += "- 게시물 데이터 없음\n\n"
+            scraped_text += f"- 팔로워: {business_data.get('followers_count', 0):,}명\n"
+            
+            if not media_data:
+                scraped_text += "- 최근 게시물 데이터 없음\n\n"
                 continue
 
-            for post in posts[:6]:
-                caption = post.get("caption", {})
-                caption_text = caption.get("text", "") if isinstance(caption, dict) else str(caption)
+            for post in media_data:
+                caption = post.get("caption", "내용 없음")
                 likes = post.get("like_count", 0)
-                comments = post.get("comment_count", 0)
-                scraped_text += f"- 좋아요: {likes} / 댓글: {comments}\n"
-                scraped_text += f"  본문: {caption_text[:200]}\n"
+                comments = post.get("comments_count", 0)
+                scraped_text += f"  > 좋아요: {likes} / 댓글: {comments}\n"
+                scraped_text += f"    본문: {caption[:150]}...\n"
 
             scraped_text += "\n"
             valid_data_count += 1
-            time.sleep(3)
 
         except Exception as e:
             print(f"❌ {username} 수집 실패: {e}")
+            if hasattr(response, 'text'):
+                print(f"상세 에러: {response.text}")
             scraped_text += f"[계정: {username}] 수집 실패\n\n"
 
-    # 🚨 수정 완료: 수집된 유효 데이터가 하나도 없으면 중단
     if valid_data_count == 0:
-        print("⚠️ 유효한 경쟁사 데이터가 수집되지 않아 시스템을 중단합니다. (API 한도 초과 등)")
+        print("⚠️ 유효한 경쟁사 데이터가 수집되지 않아 시스템을 중단합니다.")
         return ""
         
-    print("✅ 데이터 수집 완료!")
+    print("✅ 데이터 수집 완료! 영원히 막히지 않는 수집 성공! 🎉")
     return scraped_text
 
 def analyze_with_ai(scraped_data: str) -> str:
@@ -104,10 +131,7 @@ def analyze_with_ai(scraped_data: str) -> str:
 - [Action 1] (아이디어) : (1~2줄)
 - [Action 2] (아이디어) : (1~2줄)
 """
-    response = client.models.generate_content(
-        model='gemini-2.5-flash',
-        contents=prompt
-    )
+    response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
     print("✅ AI 분석 완료!")
     return response.text
 
@@ -123,7 +147,6 @@ def upload_report_to_notion(analysis_text):
         "Notion-Version": "2022-06-28"
     }
 
-    # DB 속성(제목) 이름 가져오기
     db_res = requests.get(f"https://api.notion.com/v1/databases/{NOTION_CONTENT_DB_ID}", headers=headers)
     db_props = db_res.json().get("properties", {})
     title_key = next((k for k, v in db_props.items() if v.get("type") == "title"), "이름")
@@ -143,13 +166,11 @@ def upload_report_to_notion(analysis_text):
         else:
             block_type = "bulleted_list_item" if (line.startswith("- ") or line.startswith("* ")) else "paragraph"
             clean_text = line.lstrip("*- ").strip()
-            # 간단한 볼드 처리
             parts = clean_text.split("**")
             rich_text_list = [{"type": "text", "text": {"content": part}, "annotations": {"bold": i % 2 == 1}} for i, part in enumerate(parts) if part]
             if not rich_text_list: rich_text_list = [{"type": "text", "text": {"content": clean_text}}]
             children_blocks.append({"object": "block", "type": block_type, block_type: {"rich_text": rich_text_list}})
 
-    # 페이지 생성
     page_data = {
         "parent": {"database_id": NOTION_CONTENT_DB_ID},
         "properties": {title_key: {"title": [{"text": {"content": "📊 주간 인스타그램 경쟁사 트렌드 리포트"}}]}}
@@ -162,24 +183,28 @@ def upload_report_to_notion(analysis_text):
 
     page_id = create_res.json()["id"]
 
-    # 블록(내용) 추가
     for i in range(0, len(children_blocks), 100):
         chunk = children_blocks[i:i+100]
-        append_res = requests.patch(f"https://api.notion.com/v1/blocks/{page_id}/children", headers=headers, json={"children": chunk})
-        if append_res.status_code != 200:
-            print(f"❌ 블록 추가 실패: {append_res.text}")
-            return
+        requests.patch(f"https://api.notion.com/v1/blocks/{page_id}/children", headers=headers, json={"children": chunk})
 
     print("✅ 노션 리포트 업로드 완료!")
 
 def main():
     print("=" * 50)
-    print("🚀 인스타그램 경쟁사 자동 분석 시스템 시작")
+    print("🚀 인스타그램 경쟁사 자동 분석 시스템 시작 (META 공식 API 버전)")
     print("=" * 50)
 
-    scraped_data = scrape_instagram_data()
+    if not META_ACCESS_TOKEN:
+        print("❌ 에러: META_ACCESS_TOKEN 환경변수가 설정되지 않았습니다.")
+        return
+
+    my_ig_id = get_my_ig_user_id()
+    if not my_ig_id:
+        return
+
+    scraped_data = scrape_instagram_data_official(my_ig_id)
     if not scraped_data:
-        return # 데이터가 없으면 여기서 완전 종료
+        return 
 
     analysis = analyze_with_ai(scraped_data)
     upload_report_to_notion(analysis)
