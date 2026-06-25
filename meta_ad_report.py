@@ -3,108 +3,129 @@ import requests
 from google import genai
 
 def main():
-    # 1. 환경 변수에서 API 키들 가져오기
     RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY")
     GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+    NOTION_TOKEN = os.environ.get("NOTION_API_TOKEN")
+    NOTION_META_AD_DB_ID = os.environ.get("NOTION_META_AD_DB_ID")
     
     if not RAPIDAPI_KEY or not GEMINI_API_KEY:
-        print("❌ 에러: RAPIDAPI_KEY 또는 GEMINI_API_KEY 환경변수가 설정되지 않았습니다.")
+        print("❌ 에러: 필수 API 키 환경변수가 설정되지 않았습니다.")
         return
 
-    # ✨ [변경] 특정 브랜드 대신 조사하고 싶은 카테고리 키워드를 설정합니다.
     search_keywords = ["아동복", "유아복"]
-    print(f"🚀 카테고리 키워드 {search_keywords} 기반 메타 광고 데이터 수집을 시작합니다.")
+    print(f"🚀 카테고리 키워드 {search_keywords} 메타 광고 데이터 수집 시작")
 
-    # ✨ [변경] 엔드포인트를 company/ads에서 search/ads로 변경했습니다.
     url = "https://facebook-ads-library-scraper-api.p.rapidapi.com/search/ads"
-    
     all_collected_ads = []
-
     headers = {
         "Content-Type": "application/json",
         "x-rapidapi-host": "facebook-ads-library-scraper-api.p.rapidapi.com",
         "x-rapidapi-key": RAPIDAPI_KEY
     }
 
-    # 설정한 키워드들을 돌며 광고 수집
     for keyword in search_keywords:
         print(f"🔍 '{keyword}' 관련 광고 수집 중...")
-        
-        # ✨ [변경] 카테고리 검색에 맞는 파라미터 구조로 수정했습니다.
-        # (주의: API 문서에 따라 'query' 대신 'search_terms'일 수 있습니다. 에러 발생 시 확인 필요)
-        querystring = {
-            "query": keyword,               # 검색할 카테고리 키워드
-            "status": "ACTIVE",             # 현재 집행 중인 활성 광고만
-            "country": "KR",                # 대한민국 타겟 광고
-            "media_type": "ALL",
-            "sort_by": "total_impressions", # 노출수 높은 인기 광고 위주로
-            "trim": "false"
-        }
-
+        querystring = {"query": keyword, "status": "ACTIVE", "country": "KR", "media_type": "ALL", "sort_by": "total_impressions", "trim": "false"}
         try:
             response = requests.get(url, headers=headers, params=querystring)
             response.raise_for_status()
-            
             data = response.json()
-            # 수집된 광고 데이터가 리스트 형태라면 합쳐줍니다.
-            if isinstance(data, list):
-                all_collected_ads.extend(data)
-            elif isinstance(data, dict) and "ads" in data:  # 결과가 dict 구조일 경우 대응
-                all_collected_ads.extend(data["ads"])
-            else:
-                all_collected_ads.append(data)
-                
-            print(f"✅ '{keyword}' 관련 광고 수집 완료!")
-
+            if isinstance(data, list): all_collected_ads.extend(data)
+            elif isinstance(data, dict) and "ads" in data: all_collected_ads.extend(data["ads"])
+            else: all_collected_ads.append(data)
+            print(f"✅ '{keyword}' 수집 완료!")
         except Exception as e:
-            print(f"❌ '{keyword}' 수집 중 오류 발생: {e}")
+            print(f"❌ '{keyword}' 수집 중 오류: {e}")
             continue
 
-    # 3. 제미나이(Gemini) AI를 통한 데이터 분석 리포트 생성
     if not all_collected_ads:
-        print("⚠️ 수집된 광고 데이터가 없어 분석을 진행할 수 없습니다.")
+        print("⚠️ 수집된 메타 광고 데이터가 없습니다. (API 한도 초과 등)")
         return
 
-    print("🤖 제미나이 AI 카테고리 트렌드 및 카피 분석 시작...")
-    
+    print("🤖 제미나이 AI 카테고리 트렌드 분석 시작...")
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
-        
-        # AI에게 카테고리 분석에 특화된 프롬프트 전달
         prompt = f"""
-        당신은 아동 의류 업계에 정통한 전문 퍼포먼스 마케터입니다.
-        아래 데이터는 현재 메타(페이스북/인스타그램)에서 집행 중인 '아동복' 및 '유아복' 관련 광고 분석 데이터(JSON)입니다.
-        이 데이터를 바탕으로 최신 아동/유아복 광고 트렌드 및 카피라이팅 리포트를 작성해 주세요.
-        
-        [수집 데이터]
-        {all_collected_ads[:30]} # 데이터가 너무 크면 AI가 읽지 못하므로 상위 30개로 제한합니다.
-        
-        [리포트 포함 필수 항목]
-        1. 핵심 소구점 분석: 부모들(타겟층)의 지갑을 열게 만드는 요즘 아동복 광고의 주요 셀링 포인트 (예: 소재의 안전성, 디자인, 가성비, 상하복 세트 구성 등)
-        2. 히트 광고 카피 패턴 분석: 노출수가 높은 광고들이 주로 사용하는 후킹 문구, 제목 패턴, 이모지 활용법 요약
-        3. 벤치마킹 추천 카피 라이팅 예시: 수집된 트렌드를 반영하여 우리 브랜드에서 즉시 활용할 수 있는 아동복/유아복 광고 카피 예시 5가지 (인스타그램 피드용)
-        4. 향후 우리 브랜드가 시도해야 할 소재(이미지/영상 콘텐츠) 방향성 제언
-        """
-        
-        ai_response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt
-        )
-        
+당신은 아동 의류 업계 전문 마케터입니다. 아래 메타 광고 데이터를 분석하여 노션에 업로드할 리포트를 작성해 주세요.
+
+[수집 데이터]
+{all_collected_ads[:30]}
+
+[절대 지켜야 할 작성 규칙 (노션 파싱용)]
+1. 큰 제목은 반드시 '## ' 로 시작할 것.
+2. 각 문단의 핵심 요약은 반드시 '> ' 로 시작할 것.
+3. 세부 항목이나 리스트는 반드시 '- ' 로 시작할 것.
+
+[출력 양식]
+## 🎯 1. 핵심 소구점 분석
+> (현재 부모들의 지갑을 여는 주요 셀링포인트 요약 1줄)
+- (분석 내용)
+- (분석 내용)
+
+## 🔥 2. 히트 광고 카피 패턴 분석
+> (노출수가 높은 광고들의 훅 문구/패턴 요약 1줄)
+- (패턴 특징 1)
+- (패턴 특징 2)
+
+## 💡 3. 우리 브랜드 추천 벤치마킹 카피 5선
+> (당장 사용할 수 있는 피드용 카피 1줄)
+- 1. (카피 예시)
+- 2. (카피 예시)
+"""
+        ai_response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
         report_text = ai_response.text
+        print("✨ AI 분석 완료!")
         
-        print("\n=================== ✨ [AI 아동/유아복 광고 트렌드 리포트] ===================\n")
-        print(report_text)
-        print("\n============================================================================\n")
-        
-        # 파일 저장
-        output_filename = "children_wear_ad_trend_report.txt"
-        with open(output_filename, "w", encoding="utf-8") as f:
-            f.write(report_text)
-        print(f"💾 분석 리포트가 '{output_filename}' 파일로 저장되었습니다.")
+        # 📝 노션 업로드 로직 실행
+        upload_meta_report_to_notion(report_text, NOTION_TOKEN, NOTION_META_AD_DB_ID)
 
     except Exception as e:
-        print(f"❌ 제미나이 분석 중 오류 발생: {e}")
+        print(f"❌ 제미나이 분석 중 오류: {e}")
+
+def upload_meta_report_to_notion(analysis_text, token, db_id):
+    if not db_id:
+        print("❌ NOTION_META_AD_DB_ID가 설정되지 않았습니다.")
+        return
+
+    print("📝 노션 메타 광고 리포트 업로드 중...")
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json", "Notion-Version": "2022-06-28"}
+
+    db_res = requests.get(f"https://api.notion.com/v1/databases/{db_id}", headers=headers)
+    db_props = db_res.json().get("properties", {})
+    title_key = next((k for k, v in db_props.items() if v.get("type") == "title"), "이름")
+
+    lines = analysis_text.strip().split("\n")
+    children_blocks = []
+
+    for line in lines:
+        line = line.strip()
+        if not line: continue
+        if line.startswith("## "):
+            children_blocks.append({"object": "block", "type": "heading_2", "heading_2": {"rich_text": [{"type": "text", "text": {"content": line.replace("## ", "").replace("**", "").strip()}}]}})
+        elif line.startswith("> "):
+            children_blocks.append({"object": "block", "type": "quote", "quote": {"rich_text": [{"type": "text", "text": {"content": line.replace("> ", "").strip()}}]}})
+        else:
+            block_type = "bulleted_list_item" if line.startswith("- ") else "paragraph"
+            clean_text = line.lstrip("*- ").strip()
+            parts = clean_text.split("**")
+            rich_text_list = [{"type": "text", "text": {"content": part}, "annotations": {"bold": i % 2 == 1}} for i, part in enumerate(parts) if part]
+            if not rich_text_list: rich_text_list = [{"type": "text", "text": {"content": clean_text}}]
+            children_blocks.append({"object": "block", "type": block_type, block_type: {"rich_text": rich_text_list}})
+
+    page_data = {
+        "parent": {"database_id": db_id},
+        "properties": {title_key: {"title": [{"text": {"content": "📈 주간 메타(Meta) 아동복 카테고리 광고 리포트"}}]}}
+    }
+    create_res = requests.post("https://api.notion.com/v1/pages", headers=headers, json=page_data)
+    if create_res.status_code != 200:
+        print(f"❌ 페이지 생성 실패: {create_res.text}")
+        return
+
+    page_id = create_res.json()["id"]
+    for i in range(0, len(children_blocks), 100):
+        chunk = children_blocks[i:i+100]
+        requests.patch(f"https://api.notion.com/v1/blocks/{page_id}/children", headers=headers, json={"children": chunk})
+    print("✅ 노션 리포트 업로드 완료!")
 
 if __name__ == "__main__":
     main()
