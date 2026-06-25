@@ -73,7 +73,17 @@ def main():
 - 2. (카피 예시)
 """
         ai_response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
-        report_text = ai_response.text
+        
+        # 🚨 추가된 안전장치 1: AI 응답이 비어있을 경우 (안전 필터링 등) 에러를 막아줍니다.
+        try:
+            report_text = ai_response.text
+        except ValueError:
+            report_text = None
+            
+        if not report_text:
+            print("⚠️ 제미나이 응답이 비어있습니다. ('아동복/유아복' 키워드가 AI 안전 필터에 걸렸을 수 있습니다.)")
+            return
+
         print("✨ AI 분석 완료!")
         
         # 📝 노션 업로드 로직 실행
@@ -83,6 +93,11 @@ def main():
         print(f"❌ 제미나이 분석 중 오류: {e}")
 
 def upload_meta_report_to_notion(analysis_text, token, db_id):
+    # 🚨 추가된 안전장치 2: 빈 텍스트로 노션 업로드를 시도하여 생기는 strip() 에러를 원천 차단합니다.
+    if not analysis_text:
+        print("❌ 유효한 AI 분석 결과가 없어 노션 업로드를 취소합니다.")
+        return
+
     if not db_id:
         print("❌ NOTION_META_AD_DB_ID가 설정되지 않았습니다.")
         return
