@@ -1,9 +1,8 @@
 import os
 import time
 import requests
-import json
 from dotenv import load_dotenv
-import google.generativeai as genai
+from google import genai
 
 load_dotenv()
 
@@ -26,8 +25,8 @@ COMPETITORS = [
 def scrape_instagram_data() -> str:
     print("🕵️ RapidAPI 출동! 경쟁사 인스타그램 긁어오는 중...")
 
-    # 게시물 수집 전용 엔드포인트 (팔로워 API 아님)
-    url = "https://instagram-scraper-stable-api.p.rapidapi.com/ig_get_user_posts_v2.php"
+    # 🚨 수정 완료: 404 에러 안 나는 정확한 엔드포인트
+    url = "https://instagram-scraper-stable-api.p.rapidapi.com/get_ig_user_posts.php"
     headers = {
         "x-rapidapi-host": "instagram-scraper-stable-api.p.rapidapi.com",
         "x-rapidapi-key": RAPIDAPI_KEY,
@@ -73,18 +72,11 @@ def scrape_instagram_data() -> str:
     print("✅ 데이터 수집 완료!")
     return scraped_text
 
-
 def analyze_with_ai(scraped_data: str) -> str:
     print("🧠 AI 마케터 분석 시작...")
-    genai.configure(api_key=GEMINI_API_KEY)
-
-    available_model = None
-    for m in genai.list_models():
-        if 'generateContent' in m.supported_generation_methods:
-            available_model = m.name
-            break
-
-    model = genai.GenerativeModel(available_model)
+    
+    # 🚨 수정 완료: 구글 GenAI 최신 클라이언트 문법
+    client = genai.Client(api_key=GEMINI_API_KEY)
 
     prompt = f"""
 너는 10년 차 유아동복 퍼포먼스/콘텐츠 마케터야. 아래 데이터를 분석해서 실무진이 1분 만에 읽을 수 있는 인포그래픽 스타일 노션 리포트를 써줘.
@@ -117,11 +109,13 @@ def analyze_with_ai(scraped_data: str) -> str:
 - [Action 2] (아이디어) : (1~2줄)
 - [Action 3] (아이디어) : (1~2줄)
 """
-
-    response = model.generate_content(prompt)
+    # 빠르고 똑똑한 최신 flash 모델 사용
+    response = client.models.generate_content(
+        model='gemini-2.5-flash',
+        contents=prompt
+    )
     print("✅ AI 분석 완료!")
     return response.text
-
 
 def upload_report_to_notion(analysis_text):
     print("📝 노션 업로드 중...")
@@ -135,7 +129,6 @@ def upload_report_to_notion(analysis_text):
     db_res = requests.get(f"https://api.notion.com/v1/databases/{NOTION_CONTENT_DB_ID}", headers=headers)
     db_props = db_res.json().get("properties", {})
     title_key = next((k for k, v in db_props.items() if v.get("type") == "title"), "제목")
-    print(f"📌 타이틀 속성 이름: '{title_key}'")
 
     lines = analysis_text.strip().split("\n")
     children_blocks = []
@@ -213,7 +206,6 @@ def upload_report_to_notion(analysis_text):
 
     print("✅ 노션 리포트 업로드 완료!")
 
-
 def main():
     print("=" * 50)
     print("🚀 인스타그램 경쟁사 자동 분석 시스템 시작")
@@ -226,7 +218,6 @@ def main():
 
     analysis = analyze_with_ai(scraped_data)
     upload_report_to_notion(analysis)
-
 
 if __name__ == "__main__":
     main()
