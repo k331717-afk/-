@@ -31,6 +31,9 @@ jobs:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
         NOTION_CONTENT_DB_ID: ${{ secrets.NOTION_CONTENT_DB_ID }}
+        IMGBB_API_KEY: ${{ secrets.IMGBB_API_KEY }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        OPENAI_IMAGE_MODEL: ${{ vars.OPENAI_IMAGE_MODEL }}
       run: python ig_competitor_report.py
 
     - name: run-meta-ad-report
@@ -42,7 +45,6 @@ jobs:
         IMGBB_API_KEY: ${{ secrets.IMGBB_API_KEY }}
       run: python meta_ad_report.py
 
-    # 🚨 여기에 새로운 Meta Ads 주간 자동화 리포팅 실행 단계가 추가되었습니다!
     - name: run-meta-weekly-report
       env:
         META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
@@ -52,4 +54,7 @@ jobs:
         REPORT_RECIPIENT: ${{ secrets.REPORT_RECIPIENT }}
         NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
         NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+        IMGBB_API_KEY: ${{ secrets.IMGBB_API_KEY }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        OPENAI_IMAGE_MODEL: ${{ vars.OPENAI_IMAGE_MODEL }}
       run: python meta_weekly_report.py
