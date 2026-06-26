@@ -1,15 +1,20 @@
 import os
 import time
+import base64
+import tempfile
 import requests
 from dotenv import load_dotenv
 from google import genai
 
-load_dotenv()
+load_dotenv(dotenv_path=r"C:\Users\kk331\Desktop\meta_report\.env")
 
 META_ACCESS_TOKEN = os.environ.get("META_ACCESS_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 NOTION_TOKEN = os.environ.get("NOTION_API_TOKEN")
 NOTION_CONTENT_DB_ID = os.environ.get("NOTION_CONTENT_DB_ID")
+IMGBB_API_KEY = os.environ.get("IMGBB_API_KEY")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+OPENAI_IMAGE_MODEL = os.environ.get("OPENAI_IMAGE_MODEL") or "gpt-image-2"
 
 # ✨ 대표님이 찾아오신 인스타그램 비즈니스 ID를 직접 박아넣습니다!
 MY_IG_ID = "17841408849647327"
@@ -124,7 +129,188 @@ def analyze_with_ai(scraped_data: str) -> str:
                 print(f"❌ Gemini 분석 실패 (재시도 {max_retries}회 소진): {e}")
                 return None
 
-def upload_report_to_notion(analysis_text):
+def generate_infographic_html(analysis_text: str, scraped_data: str) -> str:
+    print("🎨 AI 인포그래픽 HTML 생성 시작...")
+    client = genai.Client(api_key=GEMINI_API_KEY)
+
+    prompt = f"""
+너는 유아동복 브랜드의 콘텐츠 인사이트를 한 장짜리 카드뉴스로 정리하는 시각 디자이너야.
+아래 인스타그램 경쟁사 분석 결과를 바탕으로 노션 상단에 넣을 완전한 HTML 인포그래픽을 만들어줘.
+
+[분석 텍스트]
+{analysis_text}
+
+[원본 데이터 요약]
+{scraped_data[:4000]}
+
+[디자인 요구사항]
+- 크기: 너비 1200px × 높이 630px
+- 폰트: Noto Sans KR (Google Fonts CDN 사용)
+- 배경: 밝고 세련된 톤, 유아동복 브랜드에 어울리는 부드러운 컬러
+- 섹션: 시장 트렌드 / 벤치마킹 포인트 / 실행 액션 3개 카드
+- 각 카드에 아이콘 또는 이모지를 크게 배치
+- 하단에 "Concrete Bread 주간 인스타그램 경쟁사 인사이트" 워터마크 표시
+- 외부 이미지 없이 순수 HTML + CSS만 사용
+- 반드시 완전한 HTML 파일 (<!DOCTYPE html>부터 </html>까지)로 출력
+
+[출력 규칙]
+- HTML 코드만 출력하고 설명, 마크다운 코드블록(```), 주석은 포함하지 마.
+"""
+    try:
+        response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+        html_text = response.text.strip() if response.text else ""
+        if html_text.startswith("```"):
+            lines = html_text.split("\n")
+            html_text = "\n".join(lines[1:-1]).strip()
+        if not html_text:
+            print("⚠️ 인포그래픽 HTML 응답이 비어 있습니다.")
+            return None
+        print("✅ AI 인포그래픽 HTML 생성 완료!")
+        return html_text
+    except Exception as e:
+        print(f"❌ 인포그래픽 HTML 생성 실패: {e}")
+        return None
+
+
+def html_to_imgbb(html_content: str, imgbb_api_key: str) -> str:
+    print("📸 HTML → 이미지 변환 중...")
+    import subprocess, sys
+
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        print("⚠️ playwright 패키지가 없어 자동 설치를 시도합니다.")
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "playwright"],
+                check=True
+            )
+            from playwright.sync_api import sync_playwright
+        except Exception as e:
+            print(f"❌ playwright 자동 설치 실패: {type(e).__name__}: {e}")
+            return None
+
+    try:
+        install_cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
+        if os.name != "nt":
+            install_cmd.append("--with-deps")
+        subprocess.run(
+            install_cmd,
+            check=True
+        )
+    except Exception as e:
+        print(f"⚠️ Chromium 설치 확인 중 경고 (무시): {e}")
+
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w", encoding="utf-8") as f:
+            f.write(html_content)
+            html_path = f.name
+        png_path = html_path.replace(".html", ".png")
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page(viewport={"width": 1200, "height": 630})
+            page.goto(f"file://{html_path}")
+            page.wait_for_timeout(2000)
+            page.screenshot(path=png_path, full_page=False)
+            browser.close()
+
+        print(f"✅ 스크린샷 완료! PNG 크기: {os.path.getsize(png_path):,} bytes")
+        return upload_to_imgbb(png_path, imgbb_api_key)
+    except Exception as e:
+        print(f"❌ HTML→이미지 변환 오류: {type(e).__name__}: {e}")
+        return None
+
+
+def upload_to_imgbb(image_path: str, api_key: str) -> str:
+    print("☁️ imgbb 업로드 중...")
+    try:
+        with open(image_path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("utf-8")
+
+        res = requests.post(
+            "https://api.imgbb.com/1/upload",
+            data={"key": api_key, "image": b64}
+        )
+        res.raise_for_status()
+        image_url = res.json()["data"]["url"]
+        print(f"✅ imgbb 업로드 완료: {image_url}")
+        return image_url
+    except Exception as e:
+        print(f"❌ imgbb 업로드 오류: {type(e).__name__}: {e}")
+        if "res" in locals():
+            print(f"   imgbb 응답: {res.status_code} / {res.text[:300]}")
+        return None
+
+
+def generate_openai_infographic_to_imgbb(analysis_text: str, scraped_data: str) -> str:
+    if not OPENAI_API_KEY:
+        print("⚠️ OPENAI_API_KEY가 없어 OpenAI 인포그래픽 생성을 건너뜁니다.")
+        return None
+    if not IMGBB_API_KEY:
+        print("⚠️ IMGBB_API_KEY가 없어 생성 이미지를 노션에 넣을 수 없습니다.")
+        return None
+
+    print("🎨 OpenAI 이미지 생성기로 인포그래픽 생성 중...")
+    prompt = f"""
+Create a polished Korean infographic image for a Notion weekly report.
+
+Topic: Instagram competitor trend report for a Korean kidswear brand, Concrete Bread.
+Canvas: landscape 1536x1024.
+Style: premium but warm kidswear brand mood, soft bright palette, clean editorial layout, modern Korean marketing report.
+
+Use 3 large visual sections:
+1. 이번 주 시장 트렌드
+2. 벤치마킹 포인트
+3. 실행 액션
+
+Important text guidance:
+- Include only short Korean labels and very short phrases.
+- Avoid tiny body text.
+- Use the analysis below as content direction, but do not try to fit every sentence.
+- Make the image look like a high-end dashboard/cardnews cover for Notion.
+- Add a small footer text: "Concrete Bread 주간 인스타그램 경쟁사 인사이트"
+
+Analysis:
+{analysis_text[:2500]}
+
+Source data excerpt:
+{scraped_data[:1500]}
+"""
+
+    try:
+        res = requests.post(
+            "https://api.openai.com/v1/images/generations",
+            headers={
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": OPENAI_IMAGE_MODEL,
+                "prompt": prompt,
+                "size": "1536x1024",
+                "quality": "medium",
+                "output_format": "png"
+            },
+            timeout=180
+        )
+        res.raise_for_status()
+        image_base64 = res.json()["data"][0]["b64_json"]
+
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(base64.b64decode(image_base64))
+            png_path = f.name
+
+        print(f"✅ OpenAI 인포그래픽 생성 완료: {os.path.getsize(png_path):,} bytes")
+        return upload_to_imgbb(png_path, IMGBB_API_KEY)
+    except Exception as e:
+        print(f"❌ OpenAI 인포그래픽 생성 실패: {type(e).__name__}: {e}")
+        if "res" in locals():
+            print(f"   OpenAI 응답: {res.status_code} / {res.text[:500]}")
+        return None
+
+
+def upload_report_to_notion(analysis_text, image_url=None):
     if not NOTION_CONTENT_DB_ID:
         print("❌ NOTION_CONTENT_DB_ID가 설정되지 않았습니다.")
         return
@@ -142,6 +328,17 @@ def upload_report_to_notion(analysis_text):
 
     lines = analysis_text.strip().split("\n")
     children_blocks = []
+
+    if image_url:
+        children_blocks.append({
+            "object": "block",
+            "type": "image",
+            "image": {
+                "type": "external",
+                "external": {"url": image_url}
+            }
+        })
+        children_blocks.append({"object": "block", "type": "divider", "divider": {}})
 
     for line in lines:
         line = line.strip()
@@ -198,7 +395,15 @@ def main():
     if not analysis:
         print("❌ AI 분석 결과가 없어 노션 업로드를 건너뜁니다.")
         return
-    upload_report_to_notion(analysis)
+
+    image_url = generate_openai_infographic_to_imgbb(analysis, scraped_data)
+    if not image_url and IMGBB_API_KEY:
+        print("⚠️ OpenAI 이미지 생성이 실패해 Gemini HTML 캡처 이미지로 대체합니다.")
+        infographic_html = generate_infographic_html(analysis, scraped_data)
+        if infographic_html:
+            image_url = html_to_imgbb(infographic_html, IMGBB_API_KEY)
+
+    upload_report_to_notion(analysis, image_url)
 
 if __name__ == "__main__":
     main()
