@@ -183,11 +183,24 @@ def html_to_imgbb(html_content, imgbb_api_key):
     """playwright 로 HTML을 PNG로 렌더링 후 imgbb에 업로드"""
     print("📸 HTML → 이미지 변환 중...")
     try:
+        import subprocess, sys
+
+        # GitHub Actions 환경에서 chromium 자동 설치
+        subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium", "--with-deps"],
+            check=True, capture_output=True
+        )
+        print("✅ Chromium 설치 확인 완료")
+    except Exception as e:
+        print(f"⚠️ Chromium 설치 중 경고 (무시): {e}")
+
+    try:
         from playwright.sync_api import sync_playwright
 
         with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w", encoding="utf-8") as f:
             f.write(html_content)
             html_path = f.name
+        print(f"📄 HTML 저장 완료: {html_path}")
 
         png_path = html_path.replace(".html", ".png")
 
@@ -195,18 +208,19 @@ def html_to_imgbb(html_content, imgbb_api_key):
             browser = p.chromium.launch()
             page = browser.new_page(viewport={"width": 1200, "height": 630})
             page.goto(f"file://{html_path}")
-            page.wait_for_timeout(1500)  # 폰트 로드 대기
+            page.wait_for_timeout(2000)  # 폰트 로드 대기
             page.screenshot(path=png_path, full_page=False)
             browser.close()
 
-        print("✅ 스크린샷 완료!")
+        import os
+        print(f"✅ 스크린샷 완료! PNG 크기: {os.path.getsize(png_path):,} bytes")
         return upload_to_imgbb(png_path, imgbb_api_key)
 
     except ImportError:
-        print("❌ playwright 미설치. 터미널에서 실행: pip install playwright && playwright install chromium")
+        print("❌ playwright 미설치: pip install playwright")
         return None
     except Exception as e:
-        print(f"❌ HTML→이미지 변환 오류: {e}")
+        print(f"❌ HTML→이미지 변환 오류 (상세): {type(e).__name__}: {e}")
         return None
 
 
@@ -227,7 +241,9 @@ def upload_to_imgbb(image_path, api_key):
         print(f"✅ imgbb 업로드 완료: {image_url}")
         return image_url
     except Exception as e:
-        print(f"❌ imgbb 업로드 오류: {e}")
+        print(f"❌ imgbb 업로드 오류 (상세): {type(e).__name__}: {e}")
+        if 'res' in dir():
+            print(f"   imgbb 응답: {res.status_code} / {res.text[:300]}")
         return None
 
 
