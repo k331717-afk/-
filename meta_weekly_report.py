@@ -21,6 +21,8 @@
 
 import os
 import json
+import base64
+import tempfile
 import smtplib
 import logging
 from datetime import datetime, timedelta
@@ -67,7 +69,10 @@ CONFIG = {
     "recipient":      os.environ.get("REPORT_RECIPIENT", "k331717@concretebread.com"),
     "brand_name":     "Concrete Bread",
     "notion_token":   os.environ.get("NOTION_API_TOKEN", ""),
-    "notion_db_id":   os.environ.get("NOTION_DATABASE_ID", "")
+    "notion_db_id":   os.environ.get("NOTION_DATABASE_ID", ""),
+    "imgbb_api_key":  os.environ.get("IMGBB_API_KEY", ""),
+    "openai_api_key": os.environ.get("OPENAI_API_KEY", ""),
+    "openai_image_model": os.environ.get("OPENAI_IMAGE_MODEL") or "gpt-image-2"
 }
 
 # ──────────────────────────────────────────────
@@ -407,9 +412,164 @@ def send_email(html_content: str, config: dict, df: pd.DataFrame):
     logger.info(f"✉️ 리포트 발송 완료 → {config['recipient']}")
 
 # ──────────────────────────────────────────────
+# 5-1. HTML 인포그래픽 이미지 변환
+# ──────────────────────────────────────────────
+def html_to_imgbb(html_content: str, imgbb_api_key: str) -> str:
+    """HTML 리포트를 PNG로 렌더링한 뒤 imgbb에 업로드하고 이미지 URL을 반환"""
+    logger.info("📸 HTML 리포트를 노션용 이미지로 변환 중...")
+    import subprocess, sys
+
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        logger.warning("playwright 패키지가 없어 자동 설치를 시도합니다.")
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "playwright"],
+                check=True
+            )
+            from playwright.sync_api import sync_playwright
+        except Exception as e:
+            logger.error(f"playwright 자동 설치 실패: {type(e).__name__}: {e}")
+            return None
+
+    try:
+        install_cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
+        if os.name != "nt":
+            install_cmd.append("--with-deps")
+        subprocess.run(
+            install_cmd,
+            check=True
+        )
+    except Exception as e:
+        logger.warning(f"Chromium 설치 확인 중 경고 (무시): {e}")
+
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w", encoding="utf-8") as f:
+            f.write(html_content)
+            html_path = f.name
+        png_path = html_path.replace(".html", ".png")
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page(viewport={"width": 1200, "height": 900})
+            page.goto(f"file://{html_path}")
+            page.wait_for_timeout(2000)
+            page.screenshot(path=png_path, full_page=True)
+            browser.close()
+
+        logger.info(f"✅ 노션용 이미지 생성 완료: {os.path.getsize(png_path):,} bytes")
+        return upload_to_imgbb(png_path, imgbb_api_key)
+    except Exception as e:
+        logger.error(f"HTML→이미지 변환 오류: {type(e).__name__}: {e}")
+        return None
+
+
+def upload_to_imgbb(image_path: str, api_key: str) -> str:
+    """로컬 이미지 파일을 imgbb에 업로드하고 공개 URL 반환"""
+    logger.info("☁️ imgbb 업로드 중...")
+    try:
+        with open(image_path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("utf-8")
+
+        res = requests.post(
+            "https://api.imgbb.com/1/upload",
+            data={"key": api_key, "image": b64}
+        )
+        res.raise_for_status()
+        image_url = res.json()["data"]["url"]
+        logger.info(f"✅ imgbb 업로드 완료: {image_url}")
+        return image_url
+    except Exception as e:
+        logger.error(f"imgbb 업로드 오류: {type(e).__name__}: {e}")
+        if "res" in locals():
+            logger.error(f"imgbb 응답: {res.status_code} / {res.text[:300]}")
+        return None
+
+
+def generate_openai_infographic_to_imgbb(df: pd.DataFrame, analysis: dict, config: dict) -> str:
+    """OpenAI 이미지 생성기로 노션 상단용 Meta 광고 인포그래픽을 생성"""
+    if not config["openai_api_key"]:
+        logger.warning("OPENAI_API_KEY가 없어 OpenAI 인포그래픽 생성을 건너뜁니다.")
+        return None
+    if not config["imgbb_api_key"]:
+        logger.warning("IMGBB_API_KEY가 없어 생성 이미지를 노션에 넣을 수 없습니다.")
+        return None
+
+    start_date, end_date = get_date_range(config["lookback_days"])
+    s = analysis["summary"]
+    top_names = analysis["top2"]["캠페인명"].tolist() if not analysis["top2"].empty else []
+    bottom_names = analysis["bottom2"]["캠페인명"].tolist() if not analysis["bottom2"].empty else []
+    action_items = [item.replace("**", "") for item in (analysis["action_items"] or ["이번 주 특이 사항 없음"])[:5]]
+    campaign_table = df[["캠페인명", "지출(원)", "CTR(%)", "CPA(원)", "ROAS"]].head(8).to_string(index=False)
+
+    prompt = f"""
+Create a polished Korean infographic image for a Notion weekly Meta ads performance report.
+
+Brand: {config['brand_name']}
+Period: {start_date} ~ {end_date}
+Canvas: landscape 1536x1024.
+Style: clean premium performance marketing dashboard, bright neutral background, strong visual hierarchy, modern Korean business report.
+
+Must show these large KPI cards:
+- 총 지출: ₩{int(s['total_spend']):,}
+- 총 클릭수: {int(s['total_clicks']):,}
+- 평균 CTR: {s['avg_ctr']}%
+- 평균 CPA: {('N/A' if s['avg_cpa'] is None else '₩' + format(int(s['avg_cpa']), ','))}
+- 전체 ROAS: {('N/A' if s['total_roas'] is None else str(s['total_roas']) + 'x')}
+
+Also include:
+- Top ROAS: {', '.join(top_names) if top_names else 'N/A'}
+- Watch list: {', '.join(bottom_names) if bottom_names else 'N/A'}
+- A compact "이번 주 액션" area based on these items: {' / '.join(action_items)}
+- Footer text: "Concrete Bread Meta 광고 주간 인사이트"
+
+Text guidance:
+- Korean text must be short and large enough to read.
+- Do not include tiny tables or long paragraphs.
+- Use the campaign data below only as visual/content guidance, not as a dense table.
+
+Campaign excerpt:
+{campaign_table}
+"""
+
+    try:
+        logger.info("🎨 OpenAI 이미지 생성기로 Meta 광고 인포그래픽 생성 중...")
+        res = requests.post(
+            "https://api.openai.com/v1/images/generations",
+            headers={
+                "Authorization": f"Bearer {config['openai_api_key']}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": config["openai_image_model"],
+                "prompt": prompt,
+                "size": "1536x1024",
+                "quality": "medium",
+                "output_format": "png"
+            },
+            timeout=180
+        )
+        res.raise_for_status()
+        image_base64 = res.json()["data"][0]["b64_json"]
+
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(base64.b64decode(image_base64))
+            png_path = f.name
+
+        logger.info(f"✅ OpenAI 인포그래픽 생성 완료: {os.path.getsize(png_path):,} bytes")
+        return upload_to_imgbb(png_path, config["imgbb_api_key"])
+    except Exception as e:
+        logger.error(f"OpenAI 인포그래픽 생성 실패: {type(e).__name__}: {e}")
+        if "res" in locals():
+            logger.error(f"OpenAI 응답: {res.status_code} / {res.text[:500]}")
+        return None
+
+
+# ──────────────────────────────────────────────
 # 5-1. 노션(Notion) 데이터베이스 전송
 # ──────────────────────────────────────────────
-def send_to_notion(df: pd.DataFrame, config: dict):
+def send_to_notion(df: pd.DataFrame, config: dict, analysis: dict = None, image_url: str = None):
     if not config["notion_token"] or not config["notion_db_id"]:
         logger.warning("노션 API 토큰 또는 DB ID가 없어 노션 전송을 건너뜁니다.")
         return
@@ -442,6 +602,62 @@ def send_to_notion(df: pd.DataFrame, config: dict):
         return
         
     parent_page_id = page_res.json()["id"]
+
+    children_blocks = []
+    if image_url:
+        children_blocks.append({
+            "object": "block",
+            "type": "image",
+            "image": {
+                "type": "external",
+                "external": {"url": image_url}
+            }
+        })
+        children_blocks.append({"object": "block", "type": "divider", "divider": {}})
+
+    if analysis:
+        s = analysis["summary"]
+        children_blocks.extend([
+            {
+                "object": "block",
+                "type": "heading_2",
+                "heading_2": {"rich_text": [{"type": "text", "text": {"content": "📊 주간 핵심 성과 요약"}}]}
+            },
+            {
+                "object": "block",
+                "type": "bulleted_list_item",
+                "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": f"총 지출: ₩{int(s['total_spend']):,} / 총 클릭수: {int(s['total_clicks']):,} / 평균 CTR: {s['avg_ctr']}%"}}]}
+            },
+            {
+                "object": "block",
+                "type": "bulleted_list_item",
+                "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": f"구매전환: {int(s['total_purchases']):,}건 / 평균 CPA: {('N/A' if s['avg_cpa'] is None else '₩' + format(int(s['avg_cpa']), ','))} / 전체 ROAS: {('N/A' if s['total_roas'] is None else str(s['total_roas']) + 'x')}"}}]}
+            },
+            {
+                "object": "block",
+                "type": "heading_2",
+                "heading_2": {"rich_text": [{"type": "text", "text": {"content": "💡 이번 주 액션 아이템"}}]}
+            }
+        ])
+        action_items = analysis["action_items"] or ["이번 주 특이 사항 없음"]
+        for item in action_items[:10]:
+            children_blocks.append({
+                "object": "block",
+                "type": "bulleted_list_item",
+                "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": item.replace("**", "")}}]}
+            })
+        children_blocks.append({"object": "block", "type": "divider", "divider": {}})
+
+    if children_blocks:
+        for i in range(0, len(children_blocks), 100):
+            chunk = children_blocks[i:i+100]
+            block_res = requests.patch(
+                f"https://api.notion.com/v1/blocks/{parent_page_id}/children",
+                headers=headers,
+                json={"children": chunk}
+            )
+            if block_res.status_code != 200:
+                logger.error(f"노션 이미지/요약 블록 추가 실패: {block_res.text}")
 
     # -------------------------------------------------------------
     # Step 2: 생성된 행 내부에 하위 표 만들기 (🔥 요청하신 서식 완벽 적용)
@@ -541,7 +757,13 @@ def main():
     logger.info("Step 4/4: HTML 리포트 생성 및 이메일 발송 중...")
     html = build_html_report(df, analysis, CONFIG)
     send_email(html, CONFIG, df)
-    send_to_notion(df, CONFIG)
+
+    image_url = generate_openai_infographic_to_imgbb(df, analysis, CONFIG)
+    if not image_url and CONFIG["imgbb_api_key"]:
+        logger.warning("OpenAI 이미지 생성이 실패해 HTML 리포트 캡처 이미지로 대체합니다.")
+        image_url = html_to_imgbb(html, CONFIG["imgbb_api_key"])
+
+    send_to_notion(df, CONFIG, analysis, image_url)
 
     logger.info("✅ 모든 작업 완료!")
 
