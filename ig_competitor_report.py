@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 from dotenv import load_dotenv
 from google import genai
@@ -106,9 +107,22 @@ def analyze_with_ai(scraped_data: str) -> str:
 - [Action 1] (아이디어) : (1~2줄)
 - [Action 2] (아이디어) : (1~2줄)
 """
-    response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
-    print("✅ AI 분석 완료!")
-    return response.text
+    # 503 과부하 대비 재시도 로직 (최대 3회)
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
+            print("✅ AI 분석 완료!")
+            return response.text
+        except Exception as e:
+            is_overload = "503" in str(e) or "UNAVAILABLE" in str(e) or "429" in str(e)
+            if is_overload and attempt < max_retries - 1:
+                wait_sec = (attempt + 1) * 30  # 30초 → 60초
+                print(f"⚠️ Gemini 서버 과부하. {wait_sec}초 후 재시도... ({attempt + 1}/{max_retries})")
+                time.sleep(wait_sec)
+            else:
+                print(f"❌ Gemini 분석 실패 (재시도 {max_retries}회 소진): {e}")
+                return None
 
 def upload_report_to_notion(analysis_text):
     if not NOTION_CONTENT_DB_ID:
@@ -181,6 +195,9 @@ def main():
         return 
 
     analysis = analyze_with_ai(scraped_data)
+    if not analysis:
+        print("❌ AI 분석 결과가 없어 노션 업로드를 건너뜁니다.")
+        return
     upload_report_to_notion(analysis)
 
 if __name__ == "__main__":
