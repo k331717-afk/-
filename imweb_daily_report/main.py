@@ -744,20 +744,36 @@ class NotionClient:
         return properties
 
     def build_blocks(self, report: dict[str, Any]) -> list[dict[str, Any]]:
+        top_product = report["top_products"][0] if report["top_products"] else None
+        top_option = top_product["options"][0] if top_product and top_product["options"] else None
+
         blocks: list[dict[str, Any]] = [
-            self.heading_block("전일 판매 리포트", 2),
-            self.paragraph_block(f"기준일: {report['target_date']}"),
-            self.paragraph_block(
+            self.callout_block(
+                "오늘의 판매 요약\n"
+                f"기준일: {report['target_date']}\n"
                 f"총 구매 건수: {report['total_order_count']:,}건\n"
                 f"총 판매 수량: {report['total_item_count']:,}개\n"
                 f"총 상품 구매 금액: {won(report['total_amount'])}"
-            ),
-            self.heading_block("상품별 판매량 TOP 10", 2),
+                + (
+                    f"\n판매량 1위: {top_product['product_name']} {top_product['quantity']:,}개"
+                    if top_product
+                    else ""
+                )
+                + (
+                    f"\n1위 상품 인기 옵션: {top_option['option_name']} {top_option['quantity']:,}개"
+                    if top_option
+                    else ""
+                )
+            )
         ]
 
         if not report["top_products"]:
             blocks.append(self.paragraph_block("집계 대상 주문이 없습니다."))
             return blocks
+
+        blocks.append(self.heading_block("상품 TOP 10 요약", 2))
+        blocks.append(self.summary_table_block(report["top_products"]))
+        blocks.append(self.heading_block("옵션별 상세 판매 순위", 2))
 
         for idx, product in enumerate(report["top_products"], start=1):
             blocks.append(self.heading_block(f"{idx}. {product['product_name']}", 3))
@@ -778,12 +794,65 @@ class NotionClient:
     def paragraph_block(self, text: str) -> dict[str, Any]:
         return {"object": "block", "type": "paragraph", "paragraph": {"rich_text": self.rich_text(text)}}
 
+    def callout_block(self, text: str) -> dict[str, Any]:
+        return {
+            "object": "block",
+            "type": "callout",
+            "callout": {
+                "rich_text": self.rich_text(text),
+                "icon": {"type": "emoji", "emoji": "📌"},
+            },
+        }
+
     def bullet_block(self, text: str) -> dict[str, Any]:
         return {"object": "block", "type": "bulleted_list_item", "bulleted_list_item": {"rich_text": self.rich_text(text)}}
 
     def heading_block(self, text: str, level: int) -> dict[str, Any]:
         block_type = f"heading_{level}"
         return {"object": "block", "type": block_type, block_type: {"rich_text": self.rich_text(text)}}
+
+    def table_cell(self, text: str) -> list[dict[str, Any]]:
+        return self.rich_text(text)
+
+    def table_row_block(self, cells: list[str]) -> dict[str, Any]:
+        return {
+            "object": "block",
+            "type": "table_row",
+            "table_row": {"cells": [self.table_cell(cell) for cell in cells]},
+        }
+
+    def summary_table_block(self, products: list[dict[str, Any]]) -> dict[str, Any]:
+        rows = [
+            self.table_row_block(["순위", "상품명", "판매 수량", "구매 금액", "1위 옵션"]),
+        ]
+        for idx, product in enumerate(products, start=1):
+            top_option = product["options"][0] if product["options"] else None
+            top_option_text = (
+                f"{top_option['option_name']} ({top_option['quantity']:,}개)"
+                if top_option
+                else "-"
+            )
+            rows.append(
+                self.table_row_block(
+                    [
+                        str(idx),
+                        str(product["product_name"]),
+                        f"{product['quantity']:,}개",
+                        won(product["amount"]),
+                        top_option_text,
+                    ]
+                )
+            )
+        return {
+            "object": "block",
+            "type": "table",
+            "table": {
+                "table_width": 5,
+                "has_column_header": True,
+                "has_row_header": False,
+                "children": rows,
+            },
+        }
 
     def clear_children(self, page_id: str) -> None:
         cursor: str | None = None
