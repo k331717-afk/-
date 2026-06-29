@@ -38,8 +38,8 @@ jobs:
       IMWEB_API_KEY: ${{ secrets.IMWEB_API_KEY }}
       IMWEB_SECRET_KEY: ${{ secrets.IMWEB_SECRET_KEY }}
       IMWEB_SHOP_CODE: ${{ secrets.IMWEB_SHOP_CODE }}
-      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-      NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+      NOTION_TOKEN: ${{ secrets.IMWEB_NOTION_TOKEN }}
+      NOTION_DATABASE_ID: ${{ secrets.IMWEB_NOTION_DATABASE_ID }}
 
       NOTION_PROP_TITLE: ${{ vars.NOTION_PROP_TITLE }}
       NOTION_PROP_DATE: ${{ vars.NOTION_PROP_DATE }}
