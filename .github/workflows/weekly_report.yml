@@ -3,7 +3,7 @@ name: weekly-competitor-report
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 0 * * 1'  # 한국 시간 매주 월요일 오전 9시 실행
+    - cron: '7 0 * * 1'  # 한국 시간 매주 월요일 오전 9시 7분 실행
 
 jobs:
   run-scripts:
