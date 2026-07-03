@@ -2,7 +2,6 @@ name: Daily Imweb Sales Report
 
 on:
   schedule:
-    # 09:07, 09:17, 09:27, 09:37, 09:47 Asia/Seoul
     - cron: "7,17,27,37,47 0 * * *"
   workflow_dispatch:
 
