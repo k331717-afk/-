@@ -2,6 +2,7 @@ import os
 import time
 import base64
 import tempfile
+from datetime import datetime, timedelta, timezone
 import requests
 from dotenv import load_dotenv
 from google import genai
@@ -357,9 +358,17 @@ def upload_report_to_notion(analysis_text, image_url=None):
             if not rich_text_list: rich_text_list = [{"type": "text", "text": {"content": clean_text}}]
             children_blocks.append({"object": "block", "type": block_type, block_type: {"rich_text": rich_text_list}})
 
+    today_kst = datetime.now(timezone(timedelta(hours=9))).date()
+    period_end = today_kst - timedelta(days=today_kst.weekday() + 1)
+    period_start = period_end - timedelta(days=6)
+    end_year = f"{period_end.year}년 " if period_end.year != period_start.year else ""
+    period = (f"{period_start.year}년 {period_start.month}월 {period_start.day}일(월) ~ "
+              f"{end_year}{period_end.month}월 {period_end.day}일(일)")
+    title = f"📊 주간 인스타그램 경쟁사 트렌드 리포트 ({period})"
+
     page_data = {
         "parent": {"database_id": NOTION_CONTENT_DB_ID},
-        "properties": {title_key: {"title": [{"text": {"content": "📊 주간 인스타그램 경쟁사 트렌드 리포트"}}]}}
+        "properties": {title_key: {"title": [{"text": {"content": title}}]}}
     }
     create_res = requests.post("https://api.notion.com/v1/pages", headers=headers, json=page_data)
 

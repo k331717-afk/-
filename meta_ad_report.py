@@ -2,6 +2,7 @@ import os
 import base64
 import requests
 import tempfile
+from datetime import datetime, timedelta, timezone
 from google import genai
 
 # ─────────────────────────────────────────────
@@ -328,10 +329,18 @@ def upload_to_notion(analysis_text, token, db_id, image_url=None):
             })
 
     # ── 페이지 생성 ─────────────────────────────────
+    today_kst = datetime.now(timezone(timedelta(hours=9))).date()
+    period_end = today_kst - timedelta(days=today_kst.weekday() + 1)
+    period_start = period_end - timedelta(days=6)
+    end_year = f"{period_end.year}년 " if period_end.year != period_start.year else ""
+    period = (f"{period_start.year}년 {period_start.month}월 {period_start.day}일(월) ~ "
+              f"{end_year}{period_end.month}월 {period_end.day}일(일)")
+    title = f"📈 주간 메타(Meta) 아동복 카테고리 광고 리포트 ({period})"
+
     page_data = {
         "parent": {"database_id": db_id},
         "properties": {
-            title_key: {"title": [{"text": {"content": "📈 주간 메타(Meta) 아동복 카테고리 광고 리포트"}}]}
+            title_key: {"title": [{"text": {"content": title}}]}
         }
     }
     create_res = requests.post("https://api.notion.com/v1/pages", headers=headers, json=page_data)
