@@ -26,19 +26,65 @@ COMPETITORS = [
     "detamy_project", "apricotstudios_"
 ]
 
-def scrape_instagram_data_official(ig_user_id) -> str:
+
+def previous_week_range():
+    today_kst = datetime.now(timezone(timedelta(hours=9))).date()
+    period_end = today_kst - timedelta(days=today_kst.weekday() + 1)
+    return period_end - timedelta(days=6), period_end
+
+
+def summarize_content_metrics(evidence_rows):
+    post_count = len(evidence_rows)
+    total_likes = sum(row.get("likes", 0) for row in evidence_rows)
+    total_comments = sum(row.get("comments", 0) for row in evidence_rows)
+    account_count = len({row.get("username") for row in evidence_rows})
+    top_posts = sorted(
+        evidence_rows,
+        key=lambda row: row.get("likes", 0) + row.get("comments", 0),
+        reverse=True,
+    )[:3]
+    return {
+        "account_count": account_count,
+        "post_count": post_count,
+        "total_likes": total_likes,
+        "total_comments": total_comments,
+        "average_reactions": (total_likes + total_comments) / post_count if post_count else 0,
+        "top_posts": top_posts,
+    }
+
+
+def format_content_metrics(metrics):
+    lines = [
+        f"분석 계정 {metrics['account_count']}개",
+        f"분석 게시물 {metrics['post_count']}개",
+        f"총 좋아요 {metrics['total_likes']:,}개",
+        f"총 댓글 {metrics['total_comments']:,}개",
+        f"게시물당 평균 반응 {metrics['average_reactions']:.1f}개",
+    ]
+    for rank, row in enumerate(metrics["top_posts"], 1):
+        lines.append(
+            f"반응 TOP {rank}: [{row['source_id']}] @{row['username']} / "
+            f"좋아요 {row['likes']:,} / 댓글 {row['comments']:,} / "
+            f"팔로워 대비 반응률 {row['engagement_rate']:.2f}%"
+        )
+    return "\n".join(lines)
+
+
+def scrape_instagram_data_official(ig_user_id):
     print("🕵️ Meta 공식 API 출동! 429 에러 없이 당당하게 긁어오는 중...")
 
     url = f"https://graph.facebook.com/v19.0/{ig_user_id}"
     scraped_text = ""
     valid_data_count = 0
+    evidence_rows = []
+    period_start, period_end = previous_week_range()
 
     for username in COMPETITORS:
         print(f"📸 [{username}] 게시물 가져오는 중...")
         
         # Business Discovery를 이용한 합법적이고 빠른 데이터 요청
         params = {
-            "fields": f"business_discovery.username({username}){{followers_count,media_count,media.limit(6){{comments_count,like_count,caption}}}}",
+            "fields": f"business_discovery.username({username}){{followers_count,media_count,media.limit(25){{id,comments_count,like_count,caption,timestamp,permalink,media_type}}}}",
             "access_token": META_ACCESS_TOKEN
         }
 
@@ -49,6 +95,7 @@ def scrape_instagram_data_official(ig_user_id) -> str:
             
             business_data = data.get("business_discovery", {})
             media_data = business_data.get("media", {}).get("data", [])
+            follower_count = int(business_data.get("followers_count", 0) or 0)
 
             scraped_text += f"\n[계정: {username}]\n"
             scraped_text += f"- 팔로워: {business_data.get('followers_count', 0):,}명\n"
@@ -57,12 +104,44 @@ def scrape_instagram_data_official(ig_user_id) -> str:
                 scraped_text += "- 최근 게시물 데이터 없음\n\n"
                 continue
 
+            weekly_posts = []
             for post in media_data:
+                timestamp = post.get("timestamp", "")
+                try:
+                    post_date = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).astimezone(
+                        timezone(timedelta(hours=9))
+                    ).date()
+                except (TypeError, ValueError):
+                    continue
+                if period_start <= post_date <= period_end:
+                    weekly_posts.append((post, post_date))
+
+            if not weekly_posts:
+                scraped_text += f"- {period_start} ~ {period_end} 게시물 없음\n\n"
+                continue
+
+            for post, post_date in weekly_posts:
                 caption = post.get("caption", "내용 없음")
                 likes = post.get("like_count", 0)
                 comments = post.get("comments_count", 0)
-                scraped_text += f"  > 좋아요: {likes} / 댓글: {comments}\n"
-                scraped_text += f"    본문: {caption[:150]}...\n"
+                engagement_rate = ((likes + comments) / follower_count * 100) if follower_count else 0
+                source_id = f"C{len(evidence_rows) + 1}"
+                permalink = post.get("permalink", "")
+                scraped_text += f"  > [{source_id}] {post_date} / 좋아요: {likes} / 댓글: {comments}\n"
+                scraped_text += f"    팔로워 대비 반응률: {engagement_rate:.2f}%\n"
+                scraped_text += f"    본문: {caption[:200]}\n"
+                scraped_text += f"    원문: {permalink}\n"
+                evidence_rows.append({
+                    "source_id": source_id,
+                    "username": username,
+                    "date": str(post_date),
+                    "likes": likes,
+                    "comments": comments,
+                    "followers": follower_count,
+                    "engagement_rate": engagement_rate,
+                    "caption": caption[:240],
+                    "url": permalink,
+                })
 
             scraped_text += "\n"
             valid_data_count += 1
@@ -75,17 +154,20 @@ def scrape_instagram_data_official(ig_user_id) -> str:
 
     if valid_data_count == 0:
         print("⚠️ 유효한 경쟁사 데이터가 수집되지 않아 시스템을 중단합니다.")
-        return ""
+        return "", []
         
     print("✅ 데이터 수집 완료! 영원히 막히지 않는 수집 성공! 🎉")
-    return scraped_text
+    return scraped_text, evidence_rows
 
-def analyze_with_ai(scraped_data: str) -> str:
+def analyze_with_ai(scraped_data: str, evidence_rows) -> str:
     print("🧠 AI 마케터 분석 시작...")
     client = genai.Client(api_key=GEMINI_API_KEY)
 
     prompt = f"""
 너는 10년 차 유아동복 퍼포먼스/콘텐츠 마케터야. 아래 데이터를 분석해서 실무진이 1분 만에 읽을 수 있는 인포그래픽 스타일 노션 리포트를 써줘.
+
+[주간 수치 요약]
+{format_content_metrics(summarize_content_metrics(evidence_rows))}
 
 데이터:
 {scraped_data}
@@ -95,23 +177,34 @@ def analyze_with_ai(scraped_data: str) -> str:
 2. 이모지(🔥, 💡, 🚨, 🎯 등)를 듬뿍 사용.
 3. 큰 카테고리 제목은 반드시 '## ' 로 시작.
 4. 각 섹션 핵심 한 줄 요약은 반드시 '> ' 로 시작.
+5. 모든 분석과 성과 판단 뒤에 반드시 근거번호 [C숫자]를 표시할 것.
+6. 제공된 데이터로 확인할 수 없는 내용은 추정하지 말고 '확인 불가'라고 쓸 것.
+7. '반응이 좋다' 같은 표현만 쓰지 말고 좋아요, 댓글, 팔로워 대비 반응률을 함께 적을 것.
+8. 각 핵심 분석은 '관찰 수치 → 그렇게 판단한 이유 → 우리 브랜드 적용점' 순서로 쓸 것.
 
 [출력 양식]
-## 🎯 1. 이번 주 시장 트렌드 키워드
-> (핵심 한 줄 요약)
-- 주요 무드: (짧게)
-- 핵심 해시태그: (짧게)
-- 훅 포인트: (짧게)
+## 📊 1. 이번 주 수치 요약
+> (분석 계정 수, 게시물 수, 총 좋아요, 총 댓글, 게시물당 평균 반응)
+- 반응 TOP 1: (계정 / 좋아요 / 댓글 / 팔로워 대비 반응률 / 근거번호)
+- 반응 TOP 2: (계정 / 좋아요 / 댓글 / 팔로워 대비 반응률 / 근거번호)
 
-## 🔥 2. 반응 터진 벤치마킹 포인트
+## 🎯 2. 이번 주 시장 트렌드와 판단 근거
 > (핵심 한 줄 요약)
-- 🥇 사례 1: (브랜드명 / 성과 / 성공 이유 1줄)
-- 🥈 사례 2: (브랜드명 / 성과 / 성공 이유 1줄)
+- 관찰 수치: (계정 / 좋아요 / 댓글 / 반응률 / 근거번호)
+- 판단 이유: (어떤 문구·제품·표현이 수치와 연결됐다고 봤는지 자세히)
+- 공통 패턴: (2개 이상의 근거번호를 비교해서 설명)
 
-## 🚀 3. 당장 실행 액션
+## 🔥 3. 반응이 높았던 콘텐츠 상세 분석
+> (가장 강한 벤치마킹 포인트)
+- 사례 1 관찰 수치: (정확한 수치와 근거번호)
+- 사례 1 판단 이유: (본문 문구와 수치의 관계)
+- 사례 2 관찰 수치: (정확한 수치와 근거번호)
+- 사례 2 판단 이유: (본문 문구와 수치의 관계)
+
+## 🚀 4. 당장 실행 액션
 > (이번 주 핵심 목표 1줄)
-- [Action 1] (아이디어) : (1~2줄)
-- [Action 2] (아이디어) : (1~2줄)
+- [Action 1] (아이디어 / 연결된 근거번호 / 기대 이유)
+- [Action 2] (아이디어 / 연결된 근거번호 / 기대 이유)
 """
     # 503 과부하 대비 재시도 로직 (최대 3회)
     max_retries = 3
@@ -311,7 +404,7 @@ Source data excerpt:
         return None
 
 
-def upload_report_to_notion(analysis_text, image_url=None):
+def upload_report_to_notion(analysis_text, image_url=None, evidence_rows=None):
     if not NOTION_CONTENT_DB_ID:
         print("❌ NOTION_CONTENT_DB_ID가 설정되지 않았습니다.")
         return
@@ -341,6 +434,19 @@ def upload_report_to_notion(analysis_text, image_url=None):
         })
         children_blocks.append({"object": "block", "type": "divider", "divider": {}})
 
+    metrics = summarize_content_metrics(evidence_rows or [])
+    summary = (f"분석 계정 {metrics['account_count']}개 · 게시물 {metrics['post_count']}개 · "
+               f"총 좋아요 {metrics['total_likes']:,}개 · 총 댓글 {metrics['total_comments']:,}개 · "
+               f"게시물당 평균 반응 {metrics['average_reactions']:.1f}개")
+    children_blocks.append({
+        "object": "block",
+        "type": "callout",
+        "callout": {
+            "icon": {"type": "emoji", "emoji": "📊"},
+            "rich_text": [{"type": "text", "text": {"content": summary}}],
+        },
+    })
+
     for line in lines:
         line = line.strip()
         if not line: continue
@@ -358,9 +464,41 @@ def upload_report_to_notion(analysis_text, image_url=None):
             if not rich_text_list: rich_text_list = [{"type": "text", "text": {"content": clean_text}}]
             children_blocks.append({"object": "block", "type": block_type, block_type: {"rich_text": rich_text_list}})
 
-    today_kst = datetime.now(timezone(timedelta(hours=9))).date()
-    period_end = today_kst - timedelta(days=today_kst.weekday() + 1)
-    period_start = period_end - timedelta(days=6)
+    evidence_rows = sorted(
+        evidence_rows or [],
+        key=lambda row: row.get("likes", 0) + row.get("comments", 0),
+        reverse=True,
+    )
+    children_blocks.append({"object": "block", "type": "divider", "divider": {}})
+    children_blocks.append({
+        "object": "block",
+        "type": "heading_2",
+        "heading_2": {"rich_text": [{"type": "text", "text": {"content": "🔎 분석 근거 자료"}}]},
+    })
+    children_blocks.append({
+        "object": "block",
+        "type": "paragraph",
+        "paragraph": {"rich_text": [{"type": "text", "text": {
+            "content": "지난주 게시물 중 반응 수가 높은 순서입니다. 본문 분석의 [C숫자]와 연결됩니다."
+        }}]},
+    })
+    for row in evidence_rows[:30]:
+        label = (f"[{row['source_id']}] @{row['username']} | {row['date']} | "
+                 f"좋아요 {row['likes']:,} · 댓글 {row['comments']:,} · "
+                 f"팔로워 {row['followers']:,} · 반응률 {row['engagement_rate']:.2f}% | "
+                 f"{row['caption']}")
+        rich_text = [{"type": "text", "text": {"content": label[:1700]}}]
+        if row.get("url"):
+            rich_text.append({"type": "text", "text": {
+                "content": "  원문 보기", "link": {"url": row["url"]}
+            }})
+        children_blocks.append({
+            "object": "block",
+            "type": "bulleted_list_item",
+            "bulleted_list_item": {"rich_text": rich_text},
+        })
+
+    period_start, period_end = previous_week_range()
     end_year = f"{period_end.year}년 " if period_end.year != period_start.year else ""
     period = (f"{period_start.year}년 {period_start.month}월 {period_start.day}일(월) ~ "
               f"{end_year}{period_end.month}월 {period_end.day}일(일)")
@@ -396,11 +534,11 @@ def main():
     print(f"✅ 내 인스타그램 ID({MY_IG_ID})로 바로 탐색을 시작합니다!")
     
     # 🚨 에러가 났던 계정 찾기 함수를 빼버리고, 직접 ID를 넣어서 실행합니다.
-    scraped_data = scrape_instagram_data_official(MY_IG_ID)
+    scraped_data, evidence_rows = scrape_instagram_data_official(MY_IG_ID)
     if not scraped_data:
         return 
 
-    analysis = analyze_with_ai(scraped_data)
+    analysis = analyze_with_ai(scraped_data, evidence_rows)
     if not analysis:
         print("❌ AI 분석 결과가 없어 노션 업로드를 건너뜁니다.")
         return
@@ -412,7 +550,7 @@ def main():
         if infographic_html:
             image_url = html_to_imgbb(infographic_html, IMGBB_API_KEY)
 
-    upload_report_to_notion(analysis, image_url)
+    upload_report_to_notion(analysis, image_url, evidence_rows)
 
 if __name__ == "__main__":
     main()

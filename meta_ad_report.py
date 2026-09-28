@@ -5,6 +5,138 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from google import genai
 
+
+def find_first_value(data, field_names):
+    if isinstance(data, dict):
+        for name in field_names:
+            value = data.get(name)
+            if value not in (None, "", [], {}):
+                return value
+        for value in data.values():
+            found = find_first_value(value, field_names)
+            if found not in (None, "", [], {}):
+                return found
+    elif isinstance(data, list):
+        for value in data:
+            found = find_first_value(value, field_names)
+            if found not in (None, "", [], {}):
+                return found
+    return None
+
+
+def compact_value(value, limit=240):
+    if isinstance(value, list):
+        value = " / ".join(str(item) for item in value if item)
+    elif isinstance(value, dict):
+        value = " / ".join(f"{key}: {item}" for key, item in value.items())
+    return str(value or "확인 불가").replace("\n", " ").strip()[:limit]
+
+
+def active_days_from(started_at):
+    if not started_at or started_at == "확인 불가":
+        return None
+    try:
+        start_date = datetime.fromisoformat(str(started_at)[:10]).date()
+        today_kst = datetime.now(timezone(timedelta(hours=9))).date()
+        return max((today_kst - start_date).days + 1, 1)
+    except (TypeError, ValueError):
+        return None
+
+
+def build_ad_evidence(ads_data):
+    rows = []
+    seen = set()
+    for ad in ads_data:
+        if not isinstance(ad, dict):
+            continue
+        ad_id = compact_value(find_first_value(ad, ["ad_archive_id", "ad_id", "id"]), 100)
+        advertiser = compact_value(find_first_value(ad, ["page_name", "advertiser_name", "page_title"]), 120)
+        body = compact_value(find_first_value(
+            ad, ["ad_creative_bodies", "body", "ad_text", "primary_text", "text"]
+        ))
+        started_at = compact_value(find_first_value(
+            ad, ["ad_delivery_start_time", "start_date", "ad_creation_time", "created_at"]
+        ), 80)
+        impressions = compact_value(find_first_value(
+            ad, ["impressions", "total_impressions", "estimated_impressions"]
+        ), 120)
+        reach = compact_value(find_first_value(
+            ad, ["reach", "estimated_reach", "total_reach"]
+        ), 120)
+        spend = compact_value(find_first_value(
+            ad, ["spend", "estimated_spend", "spend_range"]
+        ), 120)
+        audience = compact_value(find_first_value(
+            ad, ["estimated_audience_size", "audience_size", "potential_reach"]
+        ), 120)
+        platforms = compact_value(find_first_value(
+            ad, ["publisher_platforms", "platforms", "placements"]
+        ), 120)
+        url = find_first_value(ad, ["ad_snapshot_url", "ad_library_url", "snapshot_url", "url"])
+        url = str(url) if isinstance(url, str) and url.startswith("http") else ""
+        if not url and ad_id != "확인 불가":
+            url = f"https://www.facebook.com/ads/library/?id={ad_id}"
+        dedupe_key = ad_id if ad_id != "확인 불가" else (advertiser, body)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        rows.append({
+            "source_id": f"A{len(rows) + 1}",
+            "advertiser": advertiser,
+            "ad_id": ad_id,
+            "started_at": started_at,
+            "active_days": active_days_from(started_at),
+            "impressions": impressions,
+            "reach": reach,
+            "spend": spend,
+            "audience": audience,
+            "platforms": platforms,
+            "body": body,
+            "url": url,
+        })
+    return rows[:30]
+
+
+def format_ad_evidence(evidence_rows):
+    lines = []
+    for row in evidence_rows:
+        lines.append(
+            f"[{row['source_id']}] 광고주={row['advertiser']} | 광고ID={row['ad_id']} | "
+            f"시작일={row['started_at']} | 활성일수={row['active_days'] or '확인 불가'} | "
+            f"노출={row['impressions']} | 도달={row['reach']} | 비용={row['spend']} | "
+            f"예상타깃={row['audience']} | 게재위치={row['platforms']} | 문구={row['body']} | "
+            f"원문={row['url'] or '확인 불가'}"
+        )
+    return "\n".join(lines)
+
+
+def summarize_ad_metrics(evidence_rows):
+    advertisers = {row["advertiser"] for row in evidence_rows if row["advertiser"] != "확인 불가"}
+    active_days = [row["active_days"] for row in evidence_rows if row.get("active_days")]
+    return {
+        "ad_count": len(evidence_rows),
+        "advertiser_count": len(advertisers),
+        "impression_count": sum(row["impressions"] != "확인 불가" for row in evidence_rows),
+        "reach_count": sum(row["reach"] != "확인 불가" for row in evidence_rows),
+        "spend_count": sum(row["spend"] != "확인 불가" for row in evidence_rows),
+        "average_active_days": sum(active_days) / len(active_days) if active_days else None,
+        "longest_active_days": max(active_days) if active_days else None,
+    }
+
+
+def format_ad_metrics(metrics):
+    average_days = (
+        f"{metrics['average_active_days']:.1f}일" if metrics["average_active_days"] is not None else "확인 불가"
+    )
+    longest_days = (
+        f"{metrics['longest_active_days']}일" if metrics["longest_active_days"] is not None else "확인 불가"
+    )
+    return (
+        f"분석 광고 {metrics['ad_count']}건 / 광고주 {metrics['advertiser_count']}개 / "
+        f"노출 수 확인 가능 {metrics['impression_count']}건 / 도달 수 확인 가능 {metrics['reach_count']}건 / "
+        f"비용 확인 가능 {metrics['spend_count']}건 / 평균 활성일수 {average_days} / 최장 활성일수 {longest_days}"
+    )
+
 # ─────────────────────────────────────────────
 # 1. 메인 진입점
 # ─────────────────────────────────────────────
@@ -59,7 +191,8 @@ def main():
     client = genai.Client(api_key=GEMINI_API_KEY)
 
     # ── AI 텍스트 분석 ──────────────────────────────
-    report_text = generate_text_report(client, all_collected_ads)
+    evidence_rows = build_ad_evidence(all_collected_ads)
+    report_text = generate_text_report(client, evidence_rows)
     if not report_text:
         return
 
@@ -74,40 +207,56 @@ def main():
         print("⚠️ IMGBB_API_KEY 미설정 → 이미지 없이 텍스트만 업로드합니다.")
 
     # ── 노션 업로드 (상단 이미지 + 하단 텍스트) ───────
-    upload_to_notion(report_text, NOTION_TOKEN, NOTION_META_AD_DB_ID, image_url)
+    upload_to_notion(report_text, NOTION_TOKEN, NOTION_META_AD_DB_ID, image_url, evidence_rows)
 
 
 # ─────────────────────────────────────────────
 # 2. Gemini 텍스트 분석 리포트 생성 (기존)
 # ─────────────────────────────────────────────
-def generate_text_report(client, ads_data):
+def generate_text_report(client, evidence_rows):
     print("🤖 Gemini AI 카테고리 트렌드 분석 시작...")
     prompt = f"""
 당신은 아동 의류 업계 전문 마케터입니다. 아래 메타 광고 데이터를 분석하여 노션에 업로드할 리포트를 작성해 주세요.
 
+[광고 수치 요약]
+{format_ad_metrics(summarize_ad_metrics(evidence_rows))}
+
 [수집 데이터]
-{ads_data[:30]}
+{format_ad_evidence(evidence_rows)}
 
 [절대 지켜야 할 작성 규칙 (노션 파싱용)]
 1. 큰 제목은 반드시 '## ' 로 시작할 것.
 2. 각 문단의 핵심 요약은 반드시 '> ' 로 시작할 것.
 3. 세부 항목이나 리스트는 반드시 '- ' 로 시작할 것.
+4. 모든 분석과 성과 판단 뒤에 반드시 근거번호 [A숫자]를 표시할 것.
+5. 제공된 데이터로 확인할 수 없는 내용은 추정하지 말고 '확인 불가'라고 쓸 것.
+6. 수치가 제공된 광고는 노출, 도달, 비용, 활성일수를 반드시 적을 것.
+7. '성과가 좋다'고 단정하려면 비교 가능한 수치 근거가 있어야 하며, 없으면 '장기 집행 가능성이 높은 광고'처럼 관찰 가능한 범위로 표현할 것.
+8. 각 핵심 분석은 '관찰 수치 → 그렇게 판단한 이유 → 우리 브랜드 적용점' 순서로 쓸 것.
 
 [출력 양식]
-## 🎯 1. 핵심 소구점 분석
-> (현재 부모들의 지갑을 여는 주요 셀링포인트 요약 1줄)
-- (분석 내용)
-- (분석 내용)
+## 📊 1. 광고 수치 요약
+> (분석 광고 수, 광고주 수, 수치 확인 가능 건수, 평균·최장 활성일수)
+- 수치가 확인되는 대표 광고: (광고주 / 노출 / 도달 / 비용 / 활성일수 / 근거번호)
+- 수치 제한: (확인 불가 항목과 그에 따른 해석 한계)
 
-## 🔥 2. 히트 광고 카피 패턴 분석
-> (노출수가 높은 광고들의 훅 문구/패턴 요약 1줄)
-- (패턴 특징 1)
-- (패턴 특징 2)
+## 🎯 2. 핵심 소구점과 판단 근거
+> (반복되는 핵심 소구점 요약)
+- 관찰 수치: (광고주 / 노출·도달·활성일수 / 근거번호)
+- 판단 이유: (광고 문구의 어떤 표현과 수치를 연결해 판단했는지)
+- 공통 패턴: (2개 이상의 광고를 비교한 상세 근거)
 
-## 💡 3. 우리 브랜드 추천 벤치마킹 카피 5선
-> (당장 사용할 수 있는 피드용 카피 1줄)
-- 1. (카피 예시)
-- 2. (카피 예시)
+## 🔥 3. 주목할 광고 상세 분석
+> (가장 설득력 있는 관찰 한 줄)
+- 사례 1 관찰 수치: (광고주 / 노출 / 도달 / 비용 / 활성일수 / 근거번호)
+- 사례 1 판단 이유: (문구와 수치가 의미하는 바를 자세히)
+- 사례 2 관찰 수치: (광고주 / 노출 / 도달 / 비용 / 활성일수 / 근거번호)
+- 사례 2 판단 이유: (문구와 수치가 의미하는 바를 자세히)
+
+## 💡 4. 우리 브랜드 적용 제안
+> (실행 방향 한 줄)
+- 제안 1: (구체적 카피 / 연결된 근거번호 / 기대 이유)
+- 제안 2: (구체적 카피 / 연결된 근거번호 / 기대 이유)
 """
     try:
         ai_response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
@@ -251,7 +400,7 @@ def upload_to_imgbb(image_path, api_key):
 # ─────────────────────────────────────────────
 # 5. 노션 업로드 (상단 이미지 + 하단 텍스트)
 # ─────────────────────────────────────────────
-def upload_to_notion(analysis_text, token, db_id, image_url=None):
+def upload_to_notion(analysis_text, token, db_id, image_url=None, evidence_rows=None):
     if not analysis_text:
         print("❌ 유효한 AI 분석 결과가 없어 노션 업로드를 취소합니다.")
         return
@@ -291,6 +440,16 @@ def upload_to_notion(analysis_text, token, db_id, image_url=None):
             "divider": {}
         })
 
+    metrics = summarize_ad_metrics(evidence_rows or [])
+    children_blocks.append({
+        "object": "block",
+        "type": "callout",
+        "callout": {
+            "icon": {"type": "emoji", "emoji": "📊"},
+            "rich_text": [{"type": "text", "text": {"content": format_ad_metrics(metrics)}}],
+        },
+    })
+
     # 2) 하단 텍스트 분석 블록
     lines = analysis_text.strip().split("\n")
     for line in lines:
@@ -327,6 +486,32 @@ def upload_to_notion(analysis_text, token, db_id, image_url=None):
                 "object": "block", "type": block_type,
                 block_type: {"rich_text": rich_text_list}
             })
+
+    children_blocks.append({"object": "block", "type": "divider", "divider": {}})
+    children_blocks.append({
+        "object": "block", "type": "heading_2",
+        "heading_2": {"rich_text": [{"type": "text", "text": {"content": "🔎 분석 근거 자료"}}]}
+    })
+    children_blocks.append({
+        "object": "block", "type": "paragraph",
+        "paragraph": {"rich_text": [{"type": "text", "text": {
+            "content": "수집 시점에 활성 상태였던 광고입니다. 본문 분석의 [A숫자]와 연결됩니다."
+        }}]}
+    })
+    for row in evidence_rows or []:
+        label = (f"[{row['source_id']}] {row['advertiser']} | 광고 ID {row['ad_id']} | "
+                 f"시작 {row['started_at']} · 활성 {row['active_days'] or '확인 불가'}일 | "
+                 f"노출 {row['impressions']} · 도달 {row['reach']} · 비용 {row['spend']} · "
+                 f"예상 타깃 {row['audience']} · 게재위치 {row['platforms']} | {row['body']}")
+        rich_text = [{"type": "text", "text": {"content": label[:1700]}}]
+        if row.get("url"):
+            rich_text.append({"type": "text", "text": {
+                "content": "  광고 원문 보기", "link": {"url": row["url"]}
+            }})
+        children_blocks.append({
+            "object": "block", "type": "bulleted_list_item",
+            "bulleted_list_item": {"rich_text": rich_text}
+        })
 
     # ── 페이지 생성 ─────────────────────────────────
     today_kst = datetime.now(timezone(timedelta(hours=9))).date()
