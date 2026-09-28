@@ -7,10 +7,8 @@ from google import genai
 
 
 DEFAULT_SEARCH_KEYWORDS = [
-    "아동복", "유아복",
     "코니", "무무즈", "보나츠", "베베드피노",
     "보보쇼즈", "베네베네", "데타미 프로젝트", "아프리콧 스튜디오",
-    "Bobo Choses", "Detamy Project", "Apricot Studios",
 ]
 
 
@@ -153,6 +151,15 @@ def format_ad_metrics(metrics):
     average_days = (
         f"{metrics['average_active_days']:.1f}일" if metrics["average_active_days"] is not None else "확인 불가"
     )
+    longest_days = (
+        f"{metrics['longest_active_days']}일" if metrics["longest_active_days"] is not None else "확인 불가"
+    )
+    return (
+        f"분석 광고 {metrics['ad_count']}건 / 광고주 {metrics['advertiser_count']}개 / "
+        f"노출 수 확인 가능 {metrics['impression_count']}건 / 도달 수 확인 가능 {metrics['reach_count']}건 / "
+        f"비용 확인 가능 {metrics['spend_count']}건 / 평균 활성일수 {average_days} / 최장 활성일수 {longest_days} / "
+        f"분석 광고주: {', '.join(metrics['advertisers']) or '확인 불가'}"
+    )
 
 
 def extract_ads(data):
@@ -169,15 +176,6 @@ def extract_ads(data):
             if nested:
                 return nested
     return [data] if find_first_value(data, ["ad_archive_id", "ad_id"]) else []
-    longest_days = (
-        f"{metrics['longest_active_days']}일" if metrics["longest_active_days"] is not None else "확인 불가"
-    )
-    return (
-        f"분석 광고 {metrics['ad_count']}건 / 광고주 {metrics['advertiser_count']}개 / "
-        f"노출 수 확인 가능 {metrics['impression_count']}건 / 도달 수 확인 가능 {metrics['reach_count']}건 / "
-        f"비용 확인 가능 {metrics['spend_count']}건 / 평균 활성일수 {average_days} / 최장 활성일수 {longest_days} / "
-        f"분석 광고주: {', '.join(metrics['advertisers']) or '확인 불가'}"
-    )
 
 # ─────────────────────────────────────────────
 # 1. 메인 진입점
@@ -199,7 +197,7 @@ def main():
         [keyword.strip() for keyword in configured_keywords.split(",") if keyword.strip()]
         if configured_keywords.strip()
         else DEFAULT_SEARCH_KEYWORDS
-    )
+    )[:8]
     print(f"🚀 카테고리 키워드 {search_keywords} 메타 광고 데이터 수집 시작")
 
     url = "https://facebook-ads-library-scraper-api.p.rapidapi.com/search/ads"
