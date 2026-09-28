@@ -6,6 +6,14 @@ from datetime import datetime, timedelta, timezone
 from google import genai
 
 
+DEFAULT_SEARCH_KEYWORDS = [
+    "아동복", "유아복",
+    "코니", "무무즈", "보나츠", "베베드피노",
+    "보보쇼즈", "베네베네", "데타미 프로젝트", "아프리콧 스튜디오",
+    "Bobo Choses", "Detamy Project", "Apricot Studios",
+]
+
+
 def find_first_value(data, field_names):
     if isinstance(data, dict):
         for name in field_names:
@@ -44,7 +52,7 @@ def active_days_from(started_at):
 
 
 def build_ad_evidence(ads_data):
-    rows = []
+    candidates = []
     seen = set()
     for ad in ads_data:
         if not isinstance(ad, dict):
@@ -80,8 +88,7 @@ def build_ad_evidence(ads_data):
         if dedupe_key in seen:
             continue
         seen.add(dedupe_key)
-        rows.append({
-            "source_id": f"A{len(rows) + 1}",
+        candidates.append({
             "advertiser": advertiser,
             "ad_id": ad_id,
             "started_at": started_at,
@@ -94,7 +101,24 @@ def build_ad_evidence(ads_data):
             "body": body,
             "url": url,
         })
-    return rows[:30]
+
+    grouped = {}
+    for row in candidates:
+        grouped.setdefault(row["advertiser"], []).append(row)
+
+    rows = []
+    for position in range(3):
+        for advertiser_rows in grouped.values():
+            if position < len(advertiser_rows):
+                rows.append(advertiser_rows[position])
+            if len(rows) >= 30:
+                break
+        if len(rows) >= 30:
+            break
+
+    for index, row in enumerate(rows, 1):
+        row["source_id"] = f"A{index}"
+    return rows
 
 
 def format_ad_evidence(evidence_rows):
@@ -116,6 +140,7 @@ def summarize_ad_metrics(evidence_rows):
     return {
         "ad_count": len(evidence_rows),
         "advertiser_count": len(advertisers),
+        "advertisers": sorted(advertisers),
         "impression_count": sum(row["impressions"] != "확인 불가" for row in evidence_rows),
         "reach_count": sum(row["reach"] != "확인 불가" for row in evidence_rows),
         "spend_count": sum(row["spend"] != "확인 불가" for row in evidence_rows),
@@ -128,13 +153,30 @@ def format_ad_metrics(metrics):
     average_days = (
         f"{metrics['average_active_days']:.1f}일" if metrics["average_active_days"] is not None else "확인 불가"
     )
+
+
+def extract_ads(data):
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    if not isinstance(data, dict):
+        return []
+    for key in ("ads", "data", "results", "items"):
+        value = data.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+        if isinstance(value, dict):
+            nested = extract_ads(value)
+            if nested:
+                return nested
+    return [data] if find_first_value(data, ["ad_archive_id", "ad_id"]) else []
     longest_days = (
         f"{metrics['longest_active_days']}일" if metrics["longest_active_days"] is not None else "확인 불가"
     )
     return (
         f"분석 광고 {metrics['ad_count']}건 / 광고주 {metrics['advertiser_count']}개 / "
         f"노출 수 확인 가능 {metrics['impression_count']}건 / 도달 수 확인 가능 {metrics['reach_count']}건 / "
-        f"비용 확인 가능 {metrics['spend_count']}건 / 평균 활성일수 {average_days} / 최장 활성일수 {longest_days}"
+        f"비용 확인 가능 {metrics['spend_count']}건 / 평균 활성일수 {average_days} / 최장 활성일수 {longest_days} / "
+        f"분석 광고주: {', '.join(metrics['advertisers']) or '확인 불가'}"
     )
 
 # ─────────────────────────────────────────────
@@ -152,7 +194,12 @@ def main():
         return
 
     # ── 광고 데이터 수집 ──────────────────────────────
-    search_keywords = ["아동복", "유아복"]
+    configured_keywords = os.environ.get("META_AD_SEARCH_KEYWORDS", "")
+    search_keywords = (
+        [keyword.strip() for keyword in configured_keywords.split(",") if keyword.strip()]
+        if configured_keywords.strip()
+        else DEFAULT_SEARCH_KEYWORDS
+    )
     print(f"🚀 카테고리 키워드 {search_keywords} 메타 광고 데이터 수집 시작")
 
     url = "https://facebook-ads-library-scraper-api.p.rapidapi.com/search/ads"
@@ -172,14 +219,9 @@ def main():
         try:
             response = requests.get(url, headers=headers, params=querystring)
             response.raise_for_status()
-            data = response.json()
-            if isinstance(data, list):
-                all_collected_ads.extend(data)
-            elif isinstance(data, dict) and "ads" in data:
-                all_collected_ads.extend(data["ads"])
-            else:
-                all_collected_ads.append(data)
-            print(f"✅ '{keyword}' 수집 완료!")
+            ads = extract_ads(response.json())
+            all_collected_ads.extend(ads)
+            print(f"✅ '{keyword}' 수집 완료: {len(ads)}건")
         except Exception as e:
             print(f"❌ '{keyword}' 수집 중 오류: {e}")
             continue
@@ -233,6 +275,8 @@ def generate_text_report(client, evidence_rows):
 6. 수치가 제공된 광고는 노출, 도달, 비용, 활성일수를 반드시 적을 것.
 7. '성과가 좋다'고 단정하려면 비교 가능한 수치 근거가 있어야 하며, 없으면 '장기 집행 가능성이 높은 광고'처럼 관찰 가능한 범위로 표현할 것.
 8. 각 핵심 분석은 '관찰 수치 → 그렇게 판단한 이유 → 우리 브랜드 적용점' 순서로 쓸 것.
+9. 서로 다른 광고주를 최소 5곳 분석할 것. 데이터에 5곳 미만만 있으면 확인된 광고주를 모두 분석하고 부족한 이유를 명시할 것.
+10. 한 광고주 사례만 반복하지 말고 광고주별로 근거번호와 대표 광고 문구를 따로 제시할 것.
 
 [출력 양식]
 ## 📊 1. 광고 수치 요약
@@ -246,12 +290,15 @@ def generate_text_report(client, evidence_rows):
 - 판단 이유: (광고 문구의 어떤 표현과 수치를 연결해 판단했는지)
 - 공통 패턴: (2개 이상의 광고를 비교한 상세 근거)
 
-## 🔥 3. 주목할 광고 상세 분석
-> (가장 설득력 있는 관찰 한 줄)
-- 사례 1 관찰 수치: (광고주 / 노출 / 도달 / 비용 / 활성일수 / 근거번호)
-- 사례 1 판단 이유: (문구와 수치가 의미하는 바를 자세히)
-- 사례 2 관찰 수치: (광고주 / 노출 / 도달 / 비용 / 활성일수 / 근거번호)
-- 사례 2 판단 이유: (문구와 수치가 의미하는 바를 자세히)
+## 🔥 3. 경쟁사별 광고 상세 분석
+> (확인된 광고주 수와 가장 뚜렷한 차이 요약)
+### 경쟁사 1: (광고주명)
+- 관찰 수치: (수집 광고 수 / 노출 / 도달 / 비용 / 활성일수 / 근거번호)
+- 대표 문구: (실제 광고 문구)
+- 판단 이유: (문구와 수치에서 확인되는 광고 전략)
+- 우리 브랜드 적용점: (구체적인 활용 방식)
+### 경쟁사 2~8
+- 위와 같은 형식으로 데이터가 있는 서로 다른 광고주를 최대 8곳까지 각각 분석
 
 ## 💡 4. 우리 브랜드 적용 제안
 > (실행 방향 한 줄)
@@ -462,6 +509,13 @@ def upload_to_notion(analysis_text, token, db_id, image_url=None, evidence_rows=
                 "object": "block", "type": "heading_2",
                 "heading_2": {"rich_text": [{"type": "text", "text": {
                     "content": line.replace("## ", "").replace("**", "").strip()
+                }}]}
+            })
+        elif line.startswith("### "):
+            children_blocks.append({
+                "object": "block", "type": "heading_3",
+                "heading_3": {"rich_text": [{"type": "text", "text": {
+                    "content": line.replace("### ", "").replace("**", "").strip()
                 }}]}
             })
         elif line.startswith("> "):
