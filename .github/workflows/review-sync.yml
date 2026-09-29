@@ -2,11 +2,13 @@ name: Sync Imweb Product Reviews
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "0 18 * * *" # 03:00 Asia/Seoul
 
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 360
     env:
       IMWEB_API_KEY: ${{ secrets.IMWEB_API_KEY }}
       IMWEB_SECRET_KEY: ${{ secrets.IMWEB_SECRET_KEY }}
