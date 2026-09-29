@@ -1,7 +1,6 @@
-"""Sync Imweb v2 product reviews to a dedicated Notion database.
+"""Sync Imweb product reviews to a dedicated Notion database.
 
-Run with the same IMWEB_API_KEY, IMWEB_SECRET_KEY and NOTION_TOKEN used by
-the sales report, plus NOTION_DATABASE_ID set to the reviews database ID.
+This module does not import, execute, or configure the sales report.
 """
 
 from __future__ import annotations
@@ -17,11 +16,88 @@ from zoneinfo import ZoneInfo
 import requests
 from dotenv import load_dotenv
 
-from main import ImwebClient, NotionClient, imweb_api_code, raise_for_imweb_api_error
-
-
 KST = ZoneInfo("Asia/Seoul")
 REVIEW_DATABASE_ID = "3ea9f355-db85-80aa-b978-ea7455afc2e3"
+
+
+def required_env(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise RuntimeError(f"필수 설정이 없습니다: {name}")
+    return value
+
+
+def imweb_api_code(payload: Any) -> int | None:
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("code")
+    if isinstance(value, str) and value.lstrip("-").isdigit():
+        return int(value)
+    return value if isinstance(value, int) else None
+
+
+def raise_for_imweb_api_error(payload: Any) -> None:
+    code = imweb_api_code(payload)
+    if code is not None and code not in {0, 200}:
+        raise RuntimeError(f"아임웹 API 오류: code={code} msg={payload.get('msg')}")
+
+
+class ImwebClient:
+    def __init__(self) -> None:
+        self.base_url = "https://api.imweb.me"
+        self.api_key = required_env("IMWEB_API_KEY")
+        self.secret_key = required_env("IMWEB_SECRET_KEY")
+        self.shop_code = os.getenv("IMWEB_SHOP_CODE", "").strip()
+        self.timeout = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "30"))
+        self.access_token: str | None = None
+
+    def authenticate(self) -> None:
+        body = {"key": self.api_key, "secret": self.secret_key}
+        if self.shop_code:
+            body["shop_code"] = self.shop_code
+        response = requests.post(f"{self.base_url}/v2/auth", json=body, timeout=self.timeout)
+        response.raise_for_status()
+        payload = response.json()
+        raise_for_imweb_api_error(payload)
+        data = payload.get("data") or {}
+        token = payload.get("access_token") or payload.get("token")
+        if isinstance(data, dict):
+            token = token or data.get("access_token") or data.get("token")
+        if not token and isinstance(payload.get("msg"), dict):
+            token = payload["msg"].get("access_token")
+        if not token:
+            raise RuntimeError("아임웹 인증 응답에 접근 토큰이 없습니다.")
+        self.access_token = str(token)
+
+    def headers(self) -> dict[str, str]:
+        if not self.access_token:
+            raise RuntimeError("아임웹 인증이 먼저 필요합니다.")
+        return {"access-token": self.access_token, "Content-Type": "application/json"}
+
+
+class NotionClient:
+    def __init__(self, database_id: str) -> None:
+        self.database_id = database_id
+        self.token = required_env("REVIEW_NOTION_TOKEN")
+        self.timeout = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "30"))
+
+    def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+        response = requests.request(
+            method,
+            f"https://api.notion.com/v1{path}",
+            headers={
+                "Authorization": f"Bearer {self.token}",
+                "Content-Type": "application/json",
+                "Notion-Version": "2022-06-28",
+            },
+            timeout=self.timeout,
+            **kwargs,
+        )
+        response.raise_for_status()
+        return response.json() if response.content else {}
+
+    def get_database(self) -> dict[str, Any]:
+        return self._request("GET", f"/databases/{self.database_id}")
 
 
 def items_from_response(payload: Any) -> list[dict[str, Any]]:
@@ -101,7 +177,7 @@ def imweb_get(client: ImwebClient, path: str, params: dict[str, Any] | None = No
     url = f"{client.base_url}{path}"
     attempts = int(os.getenv("IMWEB_TOO_MANY_REQUEST_RETRIES", "3")) + 1
     for attempt in range(attempts):
-        response = requests.get(url, headers=client._headers(), params=params, timeout=client.timeout)
+        response = requests.get(url, headers=client.headers(), params=params, timeout=client.timeout)
         response.raise_for_status()
         payload = response.json()
         if imweb_api_code(payload) != -7:
@@ -183,9 +259,7 @@ def comparable_properties(properties: dict[str, Any]) -> dict[str, Any]:
 def sync() -> tuple[int, int, int]:
     load_dotenv(Path(__file__).resolve().parent / ".env")
     database_id = os.getenv("NOTION_REVIEW_DATABASE_ID", REVIEW_DATABASE_ID)
-    os.environ.setdefault("NOTION_DATABASE_ID", database_id)
-    notion = NotionClient()
-    notion.database_id = database_id
+    notion = NotionClient(database_id)
     required = {"리뷰", "리뷰 번호", "작성일", "평점", "상품 번호", "상품명", "상품 옵션", "작성자", "내용", "출처", "포토 리뷰", "비밀글", "숨김", "동기화 시각"}
     missing = required - set(notion.get_database().get("properties", {}))
     if missing:
