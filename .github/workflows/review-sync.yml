@@ -1,9 +1,6 @@
 name: Sync Imweb Product Reviews
 
 on:
-  schedule:
-    # Daily at 09:52 Asia/Seoul (00:52 UTC).
-    - cron: "52 0 * * *"
   workflow_dispatch:
 
 jobs:
@@ -14,8 +11,8 @@ jobs:
       IMWEB_API_KEY: ${{ secrets.IMWEB_API_KEY }}
       IMWEB_SECRET_KEY: ${{ secrets.IMWEB_SECRET_KEY }}
       IMWEB_SHOP_CODE: ${{ secrets.IMWEB_SHOP_CODE }}
-      NOTION_TOKEN: ${{ secrets.IMWEB_NOTION_TOKEN }}
-      NOTION_DATABASE_ID: 3ea9f355-db85-80aa-b978-ea7455afc2e3
+      REVIEW_NOTION_TOKEN: ${{ secrets.REVIEW_NOTION_TOKEN }}
+      NOTION_REVIEW_DATABASE_ID: 3ea9f355-db85-80aa-b978-ea7455afc2e3
       IMWEB_REVIEW_PAGE_SIZE: "100"
       IMWEB_REVIEW_MAX_PAGES: "500"
       REQUEST_SLEEP_SECONDS: "0.35"
