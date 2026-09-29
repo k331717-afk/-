@@ -1,40 +1,4 @@
-oduct reviews to a dedicated Notion database.
-
-This module does not import, execute, or configure the sales report.
-"""
-
-from __future__ import annotations
-
-import logging
-import os
-import time
-from datetime import datetime
-from pathlib import Path
-from typing import Any
-from zoneinfo import ZoneInfo
-
-import requests
-from dotenv import load_dotenv
-
-KST = ZoneInfo("Asia/Seoul")
-REVIEW_DATABASE_ID = "e7caefbd-53c1-428a-bf90-c8ef399d77d2"
-
-
-def required_env(name: str) -> str:
-    value = os.getenv(name, "").strip()
-    if not value:
-        raise RuntimeError(f"필수 설정이 없습니다: {name}")
-    return value
-
-
-def imweb_api_code(payload: Any) -> int | None:
-    if not isinstance(payload, dict):
-        return None
-    value = payload.get("code")
-    if isinstance(value, str) and value.lstrip("-").isdigit():
-        return int(value)
-    return value if isinstance(value, int) else None
-그ㄹㄹ"""Sync Imweb product reviews to a dedicated Notion database.
+"""Sync Imweb product reviews to a dedicated Notion database.
 
 This module does not import, execute, or configure the sales report.
 """
