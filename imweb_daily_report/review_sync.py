@@ -172,10 +172,13 @@ def review_properties(review: dict[str, Any], product_name: str, synced_at: str)
     body = str(review.get("body") or "")
     if len(body) > 200_000:
         raise ValueError(f"구매평 #{key} 내용이 노션 텍스트 속성 한도를 넘습니다.")
+    low_rated = review.get("rating") is not None and float(review["rating"]) <= 3
     title = f"{product_name or '상품 ' + str(review.get('prod_no') or '')} · 구매평"
+    if low_rated:
+        title = f"🔴 {title}"
     source = {"imweb": "아임웹", "npay": "네이버페이"}.get(str(review.get("type") or "").lower())
     title_parts = chunks(title[:2000])
-    if review.get("rating") is not None and float(review["rating"]) <= 3:
+    if low_rated:
         for part in title_parts:
             part["annotations"] = {"color": "red"}
     properties: dict[str, Any] = {
@@ -316,7 +319,7 @@ def sync() -> tuple[int, int, int]:
                 for part in old.get("properties", {}).get("리뷰", {}).get("title", [])
             )
             if old_title.endswith(" · 구매평"):
-                product_names[prod_no] = old_title[:-len(" · 구매평")]
+                product_names[prod_no] = old_title.removeprefix("🔴 ")[:-len(" · 구매평")]
         if prod_no and prod_no not in product_names:
             try:
                 data = imweb_get(imweb, f"/v2/shop/products/{prod_no}")
