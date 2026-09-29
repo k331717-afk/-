@@ -1,4 +1,40 @@
-"""Sync Imweb product reviews to a dedicated Notion database.
+oduct reviews to a dedicated Notion database.
+
+This module does not import, execute, or configure the sales report.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo
+
+import requests
+from dotenv import load_dotenv
+
+KST = ZoneInfo("Asia/Seoul")
+REVIEW_DATABASE_ID = "e7caefbd-53c1-428a-bf90-c8ef399d77d2"
+
+
+def required_env(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise RuntimeError(f"필수 설정이 없습니다: {name}")
+    return value
+
+
+def imweb_api_code(payload: Any) -> int | None:
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("code")
+    if isinstance(value, str) and value.lstrip("-").isdigit():
+        return int(value)
+    return value if isinstance(value, int) else None
+그ㄹㄹ"""Sync Imweb product reviews to a dedicated Notion database.
 
 This module does not import, execute, or configure the sales report.
 """
@@ -147,7 +183,7 @@ def review_properties(review: dict[str, Any], product_name: str, synced_at: str)
     body = str(review.get("body") or "")
     if len(body) > 200_000:
         raise ValueError(f"구매평 #{key} 내용이 노션 텍스트 속성 한도를 넘습니다.")
-    title = f"{product_name or '상품 ' + str(review.get('prod_no') or '')} · 구매평 #{key}"
+    title = f"{product_name or '상품 ' + str(review.get('prod_no') or '')} · 구매평"
     source = {"imweb": "아임웹", "npay": "네이버페이"}.get(str(review.get("type") or "").lower())
     properties: dict[str, Any] = {
         "리뷰": {"title": chunks(title[:2000])},
@@ -163,8 +199,6 @@ def review_properties(review: dict[str, Any], product_name: str, synced_at: str)
     }
     if source:
         properties["출처"] = {"select": {"name": source}}
-    if review.get("prod_no") is not None:
-        properties["상품 번호"] = {"number": int(review["prod_no"])}
     if review.get("rating") is not None:
         properties["평점"] = {"number": float(review["rating"])}
     written_at = review_date(review.get("wtime"))
@@ -260,7 +294,7 @@ def sync() -> tuple[int, int, int]:
     load_dotenv(Path(__file__).resolve().parent / ".env")
     database_id = os.getenv("NOTION_REVIEW_DATABASE_ID", REVIEW_DATABASE_ID)
     notion = NotionClient(database_id)
-    required = {"리뷰", "리뷰 번호", "작성일", "평점", "상품 번호", "상품명", "상품 옵션", "작성자", "내용", "출처", "포토 리뷰", "비밀글", "숨김", "동기화 시각"}
+    required = {"리뷰", "리뷰 번호", "작성일", "평점", "상품명", "상품 옵션", "작성자", "내용", "출처", "포토 리뷰", "비밀글", "숨김", "동기화 시각"}
     missing = required - set(notion.get_database().get("properties", {}))
     if missing:
         raise RuntimeError(f"노션 구매평 DB에 필요한 속성이 없습니다: {', '.join(sorted(missing))}")
