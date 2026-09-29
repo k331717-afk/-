@@ -299,12 +299,24 @@ def sync() -> tuple[int, int, int]:
     imweb = ImwebClient()
     imweb.authenticate()
     reviews = fetch_reviews(imweb)
+    # Apply the visible warning color first, including on existing reviews.
+    reviews.sort(key=lambda review: 0 if review.get("rating") is not None and float(review["rating"]) <= 3 else 1)
     known = existing_pages(notion)
     product_names: dict[str, str] = {}
     created = updated = 0
+    rejected: list[str] = []
     synced_at = datetime.now(KST).isoformat()
     for index, review in enumerate(reviews, 1):
+        key = review_key(review)
+        old = known.get(key)
         prod_no = str(review.get("prod_no") or "")
+        if prod_no and prod_no not in product_names and old:
+            old_title = "".join(
+                part.get("plain_text", part.get("text", {}).get("content", ""))
+                for part in old.get("properties", {}).get("리뷰", {}).get("title", [])
+            )
+            if old_title.endswith(" · 구매평"):
+                product_names[prod_no] = old_title[:-len(" · 구매평")]
         if prod_no and prod_no not in product_names:
             try:
                 data = imweb_get(imweb, f"/v2/shop/products/{prod_no}")
@@ -315,8 +327,6 @@ def sync() -> tuple[int, int, int]:
                 product_names[prod_no] = ""
             time.sleep(float(os.getenv("REQUEST_SLEEP_SECONDS", "0.35")))
         props = review_properties(review, product_names.get(prod_no, ""), synced_at)
-        key = review_key(review)
-        old = known.get(key)
         if old:
             desired = comparable_properties({k: v for k, v in props.items() if k != "동기화 시각"})
             current = comparable_properties({k: old.get("properties", {}).get(k, {}) for k in desired})
@@ -325,11 +335,20 @@ def sync() -> tuple[int, int, int]:
             notion._request("PATCH", f"/pages/{old['id']}", json={"properties": props})
             updated += 1
         else:
-            notion._request("POST", "/pages", json={"parent": {"database_id": database_id}, "properties": props})
+            try:
+                notion._request("POST", "/pages", json={"parent": {"database_id": database_id}, "properties": props})
+            except requests.HTTPError as exc:
+                if exc.response is None or exc.response.status_code != 400:
+                    raise
+                logging.error("구매평 #%s 노션 입력 거절: %s", key, exc.response.text[:1000])
+                rejected.append(key)
+                continue
             created += 1
         if index % 25 == 0:
             logging.info("노션 구매평 처리: %s/%s건", index, len(reviews))
         time.sleep(float(os.getenv("NOTION_WRITE_SLEEP_SECONDS", "0.35")))
+    if rejected:
+        raise RuntimeError(f"노션이 거절한 구매평 {len(rejected)}건: {', '.join(rejected[:20])}")
     return len(reviews), created, updated
 
 
