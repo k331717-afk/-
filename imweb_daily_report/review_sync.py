@@ -17,7 +17,7 @@ import requests
 from dotenv import load_dotenv
 
 KST = ZoneInfo("Asia/Seoul")
-REVIEW_DATABASE_ID = "3ea9f355-db85-80aa-b978-ea7455afc2e3"
+REVIEW_DATABASE_ID = "e7caefbd-53c1-428a-bf90-c8ef399d77d2"
 
 
 def required_env(name: str) -> str:
