@@ -82,19 +82,44 @@ class NotionClient:
         self.timeout = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "30"))
 
     def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-        response = requests.request(
-            method,
-            f"https://api.notion.com/v1{path}",
-            headers={
-                "Authorization": f"Bearer {self.token}",
-                "Content-Type": "application/json",
-                "Notion-Version": "2022-06-28",
-            },
-            timeout=self.timeout,
-            **kwargs,
-        )
-        response.raise_for_status()
-        return response.json() if response.content else {}
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Content-Type": "application/json",
+            "Notion-Version": "2022-06-28",
+        }
+        review_number = ""
+        if method == "POST" and path == "/pages":
+            parts = kwargs.get("json", {}).get("properties", {}).get("리뷰 번호", {}).get("rich_text", [])
+            review_number = "".join(part.get("text", {}).get("content", "") for part in parts)
+        for attempt in range(3):
+            try:
+                response = requests.request(
+                    method, f"https://api.notion.com/v1{path}", headers=headers,
+                    timeout=self.timeout, **kwargs,
+                )
+                response.raise_for_status()
+                return response.json() if response.content else {}
+            except (requests.Timeout, requests.ConnectionError) as exc:
+                if review_number:
+                    # A timed-out create may have succeeded; check before retrying.
+                    try:
+                        result = requests.post(
+                            f"https://api.notion.com/v1/databases/{self.database_id}/query",
+                            headers=headers, timeout=self.timeout,
+                            json={"filter": {"property": "리뷰 번호", "rich_text": {"equals": review_number}}},
+                        )
+                        result.raise_for_status()
+                        matches = result.json().get("results", [])
+                        if matches:
+                            return matches[0]
+                    except (requests.Timeout, requests.ConnectionError):
+                        # Avoid a duplicate create when the lookup also times out.
+                        raise
+                if attempt == 2:
+                    raise
+                logging.warning("노션 응답 지연, 재시도 %s/2: %s", attempt + 1, exc)
+                time.sleep(2 ** attempt)
+        raise RuntimeError("노션 요청 재시도 횟수를 넘었습니다.")
 
     def get_database(self) -> dict[str, Any]:
         return self._request("GET", f"/databases/{self.database_id}")
@@ -149,10 +174,13 @@ def review_properties(review: dict[str, Any], product_name: str, synced_at: str)
         raise ValueError(f"구매평 #{key} 내용이 노션 텍스트 속성 한도를 넘습니다.")
     title = f"{product_name or '상품 ' + str(review.get('prod_no') or '')} · 구매평"
     source = {"imweb": "아임웹", "npay": "네이버페이"}.get(str(review.get("type") or "").lower())
+    title_parts = chunks(title[:2000])
+    if review.get("rating") is not None and float(review["rating"]) <= 3:
+        for part in title_parts:
+            part["annotations"] = {"color": "red"}
     properties: dict[str, Any] = {
-        "리뷰": {"title": chunks(title[:2000])},
+        "리뷰": {"title": title_parts},
         "리뷰 번호": {"rich_text": chunks(key)},
-        "상품명": {"rich_text": chunks(product_name)},
         "상품 옵션": {"rich_text": chunks(str(review.get("prod_option") or ""))},
         "작성자": {"rich_text": chunks(str(review.get("nick") or ""))},
         "내용": {"rich_text": chunks(body)},
@@ -243,7 +271,12 @@ def comparable_properties(properties: dict[str, Any]) -> dict[str, Any]:
             result[name] = None
             continue
         current = value[kind]
-        if kind in {"title", "rich_text"}:
+        if kind == "title":
+            result[name] = (
+                "".join(part.get("plain_text", part.get("text", {}).get("content", "")) for part in current),
+                tuple(part.get("annotations", {}).get("color", "default") for part in current),
+            )
+        elif kind == "rich_text":
             result[name] = "".join(part.get("plain_text", part.get("text", {}).get("content", "")) for part in current)
         elif kind == "date":
             result[name] = (current or {}).get("start")
@@ -258,7 +291,7 @@ def sync() -> tuple[int, int, int]:
     load_dotenv(Path(__file__).resolve().parent / ".env")
     database_id = os.getenv("NOTION_REVIEW_DATABASE_ID", REVIEW_DATABASE_ID)
     notion = NotionClient(database_id)
-    required = {"리뷰", "리뷰 번호", "작성일", "평점", "상품명", "상품 옵션", "작성자", "내용", "출처", "포토 리뷰", "비밀글", "숨김", "동기화 시각"}
+    required = {"리뷰", "리뷰 번호", "작성일", "평점", "상품 옵션", "작성자", "내용", "출처", "포토 리뷰", "비밀글", "숨김", "동기화 시각"}
     missing = required - set(notion.get_database().get("properties", {}))
     if missing:
         raise RuntimeError(f"노션 구매평 DB에 필요한 속성이 없습니다: {', '.join(sorted(missing))}")
