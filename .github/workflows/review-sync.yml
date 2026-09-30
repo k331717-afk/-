@@ -3,7 +3,7 @@ name: Sync Imweb Product Reviews
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 18 * * *" # 03:00 Asia/Seoul
+    - cron: "0 18 * * 0" # Monday 03:00 Asia/Seoul
 
 jobs:
   sync:

@@ -7,10 +7,13 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from datetime import datetime
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import requests
@@ -167,11 +170,48 @@ def chunks(value: str, size: int = 2000) -> list[dict[str, Any]]:
     return [{"type": "text", "text": {"content": value[i:i + size]}} for i in range(0, len(value), size)]
 
 
+class ReviewHtmlParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.text: list[str] = []
+        self.images: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "img":
+            src = dict(attrs).get("src") or ""
+            parsed = urlparse(src)
+            if parsed.scheme in {"http", "https"} and parsed.netloc and len(src) <= 2000:
+                if src not in self.images:
+                    self.images.append(src)
+        elif tag in {"br", "p", "div", "li"}:
+            self.text.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"p", "div", "li"}:
+            self.text.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        self.text.append(data)
+
+
+def review_content(body: str) -> tuple[str, list[str]]:
+    if not re.search(r"<\s*(?:img|p|div|br|span|a|ul|li)\b", body, re.IGNORECASE):
+        return body, []
+    parser = ReviewHtmlParser()
+    parser.feed(body)
+    text = "".join(parser.text).replace("\xa0", " ")
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip(), parser.images
+
+
 def review_properties(review: dict[str, Any], product_name: str, synced_at: str) -> dict[str, Any]:
     key = review_key(review)
-    body = str(review.get("body") or "")
+    body, images = review_content(str(review.get("body") or ""))
     if len(body) > 200_000:
         raise ValueError(f"구매평 #{key} 내용이 노션 텍스트 속성 한도를 넘습니다.")
+    if len(images) > 100:
+        raise ValueError(f"구매평 #{key} 사진이 노션 파일 속성 한도를 넘습니다.")
     low_rated = review.get("rating") is not None and float(review["rating"]) <= 3
     title = f"{product_name or '상품 ' + str(review.get('prod_no') or '')} · 구매평"
     if low_rated:
@@ -187,6 +227,10 @@ def review_properties(review: dict[str, Any], product_name: str, synced_at: str)
         "상품 옵션": {"rich_text": chunks(str(review.get("prod_option") or ""))},
         "작성자": {"rich_text": chunks(str(review.get("nick") or ""))},
         "내용": {"rich_text": chunks(body)},
+        "사진": {"files": [
+            {"name": f"리뷰 사진 {i}.jpg", "type": "external", "external": {"url": url}}
+            for i, url in enumerate(images, 1)
+        ]},
         "포토 리뷰": {"checkbox": as_bool(review.get("is_photo"))},
         "비밀글": {"checkbox": as_bool(review.get("is_secret"))},
         "숨김": {"checkbox": as_bool(review.get("is_hide"))},
@@ -269,7 +313,7 @@ def comparable_properties(properties: dict[str, Any]) -> dict[str, Any]:
     """Compare writable review fields without their varying Notion metadata."""
     result: dict[str, Any] = {}
     for name, value in properties.items():
-        kind = next((candidate for candidate in ("title", "rich_text", "date", "select", "checkbox", "number") if candidate in value), None)
+        kind = next((candidate for candidate in ("title", "rich_text", "date", "select", "checkbox", "number", "files") if candidate in value), None)
         if kind is None:
             result[name] = None
             continue
@@ -285,6 +329,8 @@ def comparable_properties(properties: dict[str, Any]) -> dict[str, Any]:
             result[name] = (current or {}).get("start")
         elif kind == "select":
             result[name] = (current or {}).get("name")
+        elif kind == "files":
+            result[name] = tuple(file.get("external", {}).get("url") for file in current)
         else:
             result[name] = current
     return result
@@ -294,7 +340,7 @@ def sync() -> tuple[int, int, int]:
     load_dotenv(Path(__file__).resolve().parent / ".env")
     database_id = os.getenv("NOTION_REVIEW_DATABASE_ID", REVIEW_DATABASE_ID)
     notion = NotionClient(database_id)
-    required = {"리뷰", "리뷰 번호", "작성일", "평점", "상품 옵션", "작성자", "내용", "출처", "포토 리뷰", "비밀글", "숨김", "동기화 시각"}
+    required = {"리뷰", "리뷰 번호", "작성일", "평점", "상품 옵션", "작성자", "내용", "사진", "출처", "포토 리뷰", "비밀글", "숨김", "동기화 시각"}
     missing = required - set(notion.get_database().get("properties", {}))
     if missing:
         raise RuntimeError(f"노션 구매평 DB에 필요한 속성이 없습니다: {', '.join(sorted(missing))}")
