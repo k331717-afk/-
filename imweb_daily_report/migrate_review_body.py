@@ -126,7 +126,9 @@ def finalize(notion, state):
     after = {p["id"]: (review_number(p), source_body(p)) for p in all_pages(notion)}
     if before != after:
         raise RuntimeError("기록 저장 중 원본이 바뀌어 열 삭제를 중단합니다.")
-    notion._request("PATCH", f"/databases/{notion.database_id}", json={"properties": {name: None for name in REMOVED}})
+    remaining_columns = REMOVED & set(notion.get_database().get("properties", {}))
+    if remaining_columns:
+        notion._request("PATCH", f"/databases/{notion.database_id}", json={"properties": {name: None for name in remaining_columns}})
     if REMOVED & set(notion.get_database().get("properties", {})):
         raise RuntimeError("열 삭제 최종 검증 실패")
     report = {"verified_reviews": len(pages), "removed_columns": sorted(REMOVED), "status": "complete"}
