@@ -6,22 +6,34 @@ import json
 import os
 import io
 import zipfile
+import hashlib
 import zlib
 from pathlib import Path
 from typing import Any
 
 import requests
+from cryptography.fernet import Fernet
 
 STATE_ARTIFACT = "imweb-review-sync-state"
 
 
 def encode_state(state: dict[str, Any]) -> str:
     raw = json.dumps(state, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    return json.dumps({"format": "zlib-base64", "data": base64.b64encode(zlib.compress(raw)).decode()})
+    return json.dumps({"format": "fernet-zlib-v1", "data": state_cipher().encrypt(zlib.compress(raw)).decode()})
+
+
+def state_cipher() -> Fernet:
+    secret = os.getenv("REVIEW_NOTION_TOKEN", "").strip()
+    if not secret:
+        raise RuntimeError("구매평 작업 기록을 암호화할 전용 토큰이 없습니다.")
+    key = hashlib.sha256(b"concretebread-review-state-v1\0" + secret.encode()).digest()
+    return Fernet(base64.urlsafe_b64encode(key))
 
 
 def decode_state(raw: str) -> dict[str, Any]:
     value = json.loads(raw)
+    if value.get("format") == "fernet-zlib-v1":
+        return json.loads(zlib.decompress(state_cipher().decrypt(value["data"].encode())))
     if value.get("format") == "zlib-base64":
         return json.loads(zlib.decompress(base64.b64decode(value["data"])))
     return value
@@ -72,4 +84,3 @@ class ReviewState:
         temporary = self.local_path.with_suffix(".tmp")
         temporary.write_text(content, encoding="utf-8")
         temporary.replace(self.local_path)
-
