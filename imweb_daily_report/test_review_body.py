@@ -1,7 +1,7 @@
 import sys
 import types
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 try:
     import requests
@@ -61,7 +61,13 @@ class ReviewBodyTests(unittest.TestCase):
 
     def test_state_roundtrip(self):
         state = {'database_id': 'db', 'reviews': {'123': {'page_id': 'abc', 'images': []}}, 'pending': {}}
-        self.assertEqual(decode_state(encode_state(state)), state)
+        with patch.dict('os.environ', {'REVIEW_NOTION_TOKEN': 'test-only-never-an-api-credential'}):
+            encoded = encode_state(state)
+            self.assertNotIn('page_id', encoded)
+            self.assertEqual(decode_state(encoded), state)
+        with patch.dict('os.environ', {'REVIEW_NOTION_TOKEN': 'different-test-key'}):
+            with self.assertRaises(Exception):
+                decode_state(encoded)
 
     def test_lost_index_fails_closed(self):
         client = Mock(database_id='db')
@@ -84,4 +90,3 @@ class ReviewBodyTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-
