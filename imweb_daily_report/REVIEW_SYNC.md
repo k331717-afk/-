@@ -4,7 +4,7 @@
 
 매주 월요일 오전 3시(한국 시간)에 상품 구매평을 동기화합니다. 리뷰 글은 각 페이지의 `리뷰 내용` 본문에, HTML에 포함된 사진은 이미지 블록과 `사진` 속성에 저장합니다. 평점 3점 이하는 제목 앞의 🔴 표시를 유지합니다.
 
-`내용`, `리뷰 번호`, `비밀글`, `숨김` 속성은 사용하지 않습니다. 중복 방지에 필요한 아임웹 리뷰 번호와 노션 페이지 ID는 GitHub Actions의 `imweb-review-sync-state` 작업 기록 파일에 압축 저장합니다. 매 실행마다 최신 기록을 읽고 새 기록을 90일 보관합니다. 기록이 유실되거나 응답이 끊긴 생성 결과가 불확실하면 중복 방지를 위해 중단합니다.
+`내용`, `리뷰 번호`, `비밀글`, `숨김` 속성은 사용하지 않습니다. 중복 방지에 필요한 아임웹 리뷰 번호와 노션 페이지 ID는 GitHub Actions의 `imweb-review-sync-state` 작업 기록 파일에 압축·암호화하여 저장합니다. 매 실행마다 최신 기록을 읽고 새 기록을 90일 보관합니다. 원본 백업도 암호화하여 보관합니다. 암호화 키는 구매평 전용 Notion 토큰에서 용도를 구분하여 도출하므로 토큰을 바꿀 때는 먼저 기존 기록을 재암호화해야 합니다. 기록이 유실되거나 응답이 끊긴 생성 결과가 불확실하면 중복 방지를 위해 중단합니다.
 
 GitHub Secrets: `REVIEW_NOTION_TOKEN`, `IMWEB_API_KEY`, `IMWEB_SECRET_KEY`, 필요 시 `IMWEB_SHOP_CODE`. `GITHUB_TOKEN`에는 코드와 이전 작업 기록의 읽기 권한만 설정합니다. 내부 기록은 `actions/upload-artifact`로 보관하며 저장소 파일을 자동 수정하지 않습니다.
 
@@ -13,4 +13,3 @@ GitHub Secrets: `REVIEW_NOTION_TOKEN`, `IMWEB_API_KEY`, `IMWEB_SECRET_KEY`, 필�
 판매 리포트와 별도이며 판매 리포트의 코드, 토큰, 데이터베이스는 사용하지 않습니다.
 
 검증: `python imweb_daily_report/test_review_body.py`
-
