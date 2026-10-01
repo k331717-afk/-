@@ -110,8 +110,22 @@ def apply(notion, state):
     after = {p["id"]: (review_number(p), source_body(p)) for p in fresh}
     if before != after:
         raise RuntimeError("이전 중 원본 데이터가 바뀌었습니다. 원본 열을 유지하고 재실행을 기다립니다.")
-    state.data["migration_complete"] = True
+    state.data["migration_verified"] = True
     state.save()
+    logging.info("본문 검증 완료: %s건. 기록 파일 저장 후 열을 삭제합니다.", len(pages))
+
+
+def finalize(notion, state):
+    backup = json.loads(BACKUP.read_text(encoding="utf-8"))
+    if backup.get("already_complete"):
+        return
+    pages = backup["pages"]
+    if not state.data.get("migration_verified") or any(not state.data['reviews'].get(review_number(p), {}).get('body_migrated') for p in pages):
+        raise RuntimeError("본문 이전 검증이 완료되지 않았습니다.")
+    before = {p["id"]: (review_number(p), source_body(p)) for p in pages}
+    after = {p["id"]: (review_number(p), source_body(p)) for p in all_pages(notion)}
+    if before != after:
+        raise RuntimeError("기록 저장 중 원본이 바뀌어 열 삭제를 중단합니다.")
     notion._request("PATCH", f"/databases/{notion.database_id}", json={"properties": {name: None for name in REMOVED}})
     if REMOVED & set(notion.get_database().get("properties", {})):
         raise RuntimeError("열 삭제 최종 검증 실패")
@@ -123,12 +137,12 @@ def apply(notion, state):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["prepare", "apply"])
+    parser.add_argument("mode", choices=["prepare", "apply", "finalize"])
     args = parser.parse_args()
     database_id = os.getenv("NOTION_REVIEW_DATABASE_ID", REVIEW_DATABASE_ID)
     if database_id != REVIEW_DATABASE_ID:
         raise RuntimeError("이 작업은 지정된 구매평 데이터베이스에서만 실행할 수 있습니다.")
     client = MigrationClient(database_id)
     state = ReviewState(database_id)
-    (prepare if args.mode == "prepare" else apply)(client, state)
+    {"prepare": prepare, "apply": apply, "finalize": finalize}[args.mode](client, state)
 
