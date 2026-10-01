@@ -4,14 +4,15 @@ from __future__ import annotations
 import base64
 import json
 import os
+import io
+import zipfile
 import zlib
 from pathlib import Path
 from typing import Any
 
 import requests
 
-STATE_BRANCH = "review-sync-state"
-STATE_PATH = "imweb_daily_report/review_sync_state.json"
+STATE_ARTIFACT = "imweb-review-sync-state"
 
 
 def encode_state(state: dict[str, Any]) -> str:
@@ -32,24 +33,27 @@ class ReviewState:
         self.local_path = self.directory / "review_sync_state.json"
         self.repository = os.getenv("GITHUB_REPOSITORY", "")
         self.token = os.getenv("REVIEW_STATE_GITHUB_TOKEN", "")
-        self.sha: str | None = None
         self.remote = bool(self.repository and self.token)
         if os.getenv("GITHUB_ACTIONS") == "true" and not self.remote:
-            raise RuntimeError("구매평 중복 방지 기록을 저장할 GitHub 토큰이 없습니다.")
+            raise RuntimeError("구매평 작업 기록을 읽을 GitHub 토큰이 없습니다.")
         seed = self.directory / "review_index_seed.json"
         self.data = (decode_state(seed.read_text(encoding="utf-8")) if seed.exists() else
                      {"version": 1, "database_id": database_id, "reviews": {}, "pending": {}})
-        if self.remote:
-            response = self.request("GET", f"/contents/{STATE_PATH}", params={"ref": STATE_BRANCH})
-            if response.status_code != 404:
-                response.raise_for_status()
-                payload = response.json()
-                if not payload.get("content"):
-                    raise RuntimeError("구매평 동기화 기록을 읽지 못했습니다. 중복 방지를 위해 중단합니다.")
-                self.sha = payload["sha"]
-                self.data = decode_state(base64.b64decode(payload["content"]).decode("utf-8"))
-        elif self.local_path.exists():
+        if self.local_path.exists():
             self.data = decode_state(self.local_path.read_text(encoding="utf-8"))
+        elif self.remote:
+            response = self.request("GET", "/actions/artifacts", params={"name": STATE_ARTIFACT, "per_page": 100})
+            response.raise_for_status()
+            artifacts = [a for a in response.json().get("artifacts", []) if not a.get("expired") and a.get("name") == STATE_ARTIFACT]
+            if artifacts:
+                latest = max(artifacts, key=lambda a: a["id"])
+                archive = self.request("GET", f"/actions/artifacts/{latest['id']}/zip")
+                archive.raise_for_status()
+                with zipfile.ZipFile(io.BytesIO(archive.content)) as files:
+                    names = [n for n in files.namelist() if n.split('/')[-1] == 'review_sync_state.json']
+                    if len(names) != 1:
+                        raise RuntimeError("구매평 작업 기록 파일을 확정할 수 없습니다.")
+                    self.data = decode_state(files.read(names[0]).decode("utf-8"))
         if self.data.get("database_id") != database_id:
             raise RuntimeError("구매평 DB와 동기화 기록의 데이터베이스 ID가 다릅니다.")
         self.data.setdefault("pending", {})
@@ -65,25 +69,7 @@ class ReviewState:
 
     def save(self) -> None:
         content = encode_state(self.data)
-        if self.remote:
-            branch = self.request("GET", f"/git/ref/heads/{STATE_BRANCH}")
-            if branch.status_code == 404:
-                commit = os.environ["GITHUB_SHA"]
-                self.request("POST", "/git/refs", json={"ref": f"refs/heads/{STATE_BRANCH}", "sha": commit}).raise_for_status()
-            else:
-                branch.raise_for_status()
-            payload: dict[str, Any] = {
-                "message": "Save product review sync index",
-                "branch": STATE_BRANCH,
-                "content": base64.b64encode(content.encode("utf-8")).decode(),
-            }
-            if self.sha:
-                payload["sha"] = self.sha
-            result = self.request("PUT", f"/contents/{STATE_PATH}", json=payload)
-            result.raise_for_status()
-            self.sha = result.json()["content"]["sha"]
-        else:
-            temporary = self.local_path.with_suffix(".tmp")
-            temporary.write_text(content, encoding="utf-8")
-            temporary.replace(self.local_path)
+        temporary = self.local_path.with_suffix(".tmp")
+        temporary.write_text(content, encoding="utf-8")
+        temporary.replace(self.local_path)
 
