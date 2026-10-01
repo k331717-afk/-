@@ -380,6 +380,8 @@ def existing_pages(notion: NotionClient, state: ReviewState) -> dict[str, dict[s
         mapped.add(page["id"].replace("-", ""))
         del state.data["pending"][key]
         state.save()
+    if set(by_id) - mapped:
+        raise RuntimeError("내부 기록에 없는 구매평 페이지가 있습니다. 기록 유실에 따른 중복 생성을 막기 위해 중단합니다.")
     return {key: by_id[r["page_id"].replace("-", "")] for key, r in records.items()
             if r["page_id"].replace("-", "") in by_id}
 
@@ -430,6 +432,7 @@ def sync() -> tuple[int, int, int]:
     # Apply the visible warning color first, including on existing reviews.
     reviews.sort(key=lambda review: 0 if review.get("rating") is not None and float(review["rating"]) <= 3 else 1)
     known = existing_pages(notion, state)
+    state.save()
     product_names: dict[str, str] = {}
     created = updated = 0
     rejected: list[str] = []
