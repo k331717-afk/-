@@ -69,6 +69,23 @@ class ReviewBodyTests(unittest.TestCase):
             with self.assertRaises(Exception):
                 decode_state(encoded)
 
+    def test_known_markdown_import_restores_exact_source(self):
+        client = Mock()
+        source = '잘 맞아요\\~\\~ \n다음 줄'
+        client._request.side_effect = [
+            {'results': stored(body_blocks('잘 맞아요~~\n다음 줄', []))},
+            stored(body_blocks(source, []))[1],
+        ]
+        ensure_body(client, 'page', source, [], preserve_existing=True, allow_format_repair=True)
+        self.assertEqual(client._request.call_args.kwargs['json']['paragraph']['rich_text'][0]['text']['content'], source)
+
+    def test_format_repair_rejects_changed_words(self):
+        client = Mock()
+        client._request.return_value = {'results': stored(body_blocks('사용자가 고친 내용', []))}
+        with self.assertRaises(RuntimeError):
+            ensure_body(client, 'page', '원래 내용', [], preserve_existing=True, allow_format_repair=True)
+        self.assertEqual(client._request.call_count, 1)
+
     def test_lost_index_fails_closed(self):
         client = Mock(database_id='db')
         client._request.return_value = {'results': [{'id': 'existing', 'properties': {}}]}
