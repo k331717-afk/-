@@ -16,6 +16,17 @@ from review_state import ReviewState, encode_state
 
 REMOVED = {"내용", "리뷰 번호", "비밀글", "숨김"}
 BACKUP = Path("review-migration-backup.json")
+# These seven pages were imported through Markdown before the REST migration.
+# Reconcile only whitespace and escaped tildes, with the source text restored exactly.
+MARKDOWN_IMPORTED_PAGES = {
+    "3ea9f355-db85-81d7-9365-fea0c6a3412f",
+    "3ea9f355-db85-8117-892c-d61a3cc60827",
+    "3ea9f355-db85-812c-9922-d772432a3803",
+    "3ea9f355-db85-8130-848d-c6c256bef14b",
+    "3ea9f355-db85-810a-b771-ec3db4378a7b",
+    "3ea9f355-db85-8193-9cce-f86a50f03de1",
+    "3ea9f355-db85-8152-8c64-ebc98cc2a3f9",
+}
 
 
 class MigrationClient(NotionClient):
@@ -85,7 +96,8 @@ def apply(notion, state):
         digest = body_hash(body)
         if record.get("body_migrated") and record.get("body_hash") == digest and record.get("images") == images:
             return key, record
-        text_id = ensure_body(notion, page["id"], body, images, preserve_existing=True)
+        text_id = ensure_body(notion, page["id"], body, images, preserve_existing=True,
+                              allow_format_repair=page["id"] in MARKDOWN_IMPORTED_PAGES)
         return key, {"page_id": page["id"], "body_hash": digest, "images": images,
                      "text_block_id": text_id, "body_migrated": True}
 
@@ -151,4 +163,3 @@ if __name__ == "__main__":
     client = MigrationClient(database_id)
     state = ReviewState(database_id)
     {"prepare": prepare, "apply": apply, "finalize": finalize}[args.mode](client, state)
-
