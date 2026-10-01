@@ -29,7 +29,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - run: python -m pip install -r imweb_daily_report/requirements.txt
+      - run: python -m pip install -r imweb_daily_report/requirements.txt cryptography
       - name: Validate migration behavior
         run: python imweb_daily_report/test_review_body.py
       - name: Back up review properties and identity index
@@ -37,8 +37,8 @@ jobs:
       - name: Preserve source backup before changing pages
         uses: actions/upload-artifact@v4
         with:
-          name: review-properties-before-migration
-          path: review-migration-backup.json
+          name: review-properties-before-migration-encrypted
+          path: review-migration-backup.enc
           retention-days: 90
           if-no-files-found: error
       - name: Move and verify all review bodies
@@ -62,4 +62,3 @@ jobs:
             review-migration-result.json
             review-migration-errors.json
           if-no-files-found: ignore
-
