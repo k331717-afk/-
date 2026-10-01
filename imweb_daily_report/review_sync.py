@@ -6,6 +6,8 @@ This module does not import, execute, or configure the sales report.
 from __future__ import annotations
 
 import logging
+import hashlib
+import json
 import os
 import re
 import time
@@ -18,6 +20,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
+from review_state import ReviewState
 
 KST = ZoneInfo("Asia/Seoul")
 REVIEW_DATABASE_ID = "e7caefbd-53c1-428a-bf90-c8ef399d77d2"
@@ -90,37 +93,25 @@ class NotionClient:
             "Content-Type": "application/json",
             "Notion-Version": "2022-06-28",
         }
-        review_number = ""
-        if method == "POST" and path == "/pages":
-            parts = kwargs.get("json", {}).get("properties", {}).get("리뷰 번호", {}).get("rich_text", [])
-            review_number = "".join(part.get("text", {}).get("content", "") for part in parts)
-        for attempt in range(3):
+        for attempt in range(6):
             try:
                 response = requests.request(
                     method, f"https://api.notion.com/v1{path}", headers=headers,
                     timeout=self.timeout, **kwargs,
                 )
+                if response.status_code == 429 and attempt < 5:
+                    time.sleep(float(response.headers.get("Retry-After", "5")))
+                    continue
                 response.raise_for_status()
                 return response.json() if response.content else {}
             except (requests.Timeout, requests.ConnectionError) as exc:
-                if review_number:
-                    # A timed-out create may have succeeded; check before retrying.
-                    try:
-                        result = requests.post(
-                            f"https://api.notion.com/v1/databases/{self.database_id}/query",
-                            headers=headers, timeout=self.timeout,
-                            json={"filter": {"property": "리뷰 번호", "rich_text": {"equals": review_number}}},
-                        )
-                        result.raise_for_status()
-                        matches = result.json().get("results", [])
-                        if matches:
-                            return matches[0]
-                    except (requests.Timeout, requests.ConnectionError):
-                        # Avoid a duplicate create when the lookup also times out.
-                        raise
-                if attempt == 2:
+                # A create/append may already have succeeded. The durable pending
+                # record is reconciled on the next run instead of creating twice.
+                if (method == "POST" and path == "/pages") or (method == "PATCH" and path.endswith("/children")):
                     raise
-                logging.warning("노션 응답 지연, 재시도 %s/2: %s", attempt + 1, exc)
+                if attempt == 5:
+                    raise
+                logging.warning("노션 응답 지연, 재시도 %s/5: %s", attempt + 1, exc)
                 time.sleep(2 ** attempt)
         raise RuntimeError("노션 요청 재시도 횟수를 넘었습니다.")
 
@@ -223,17 +214,13 @@ def review_properties(review: dict[str, Any], product_name: str, synced_at: str)
             part["annotations"] = {"color": "red"}
     properties: dict[str, Any] = {
         "리뷰": {"title": title_parts},
-        "리뷰 번호": {"rich_text": chunks(key)},
         "상품 옵션": {"rich_text": chunks(str(review.get("prod_option") or ""))},
         "작성자": {"rich_text": chunks(str(review.get("nick") or ""))},
-        "내용": {"rich_text": chunks(body)},
         "사진": {"files": [
             {"name": f"리뷰 사진 {i}.jpg", "type": "external", "external": {"url": url}}
             for i, url in enumerate(images, 1)
         ]},
         "포토 리뷰": {"checkbox": as_bool(review.get("is_photo"))},
-        "비밀글": {"checkbox": as_bool(review.get("is_secret"))},
-        "숨김": {"checkbox": as_bool(review.get("is_hide"))},
         "동기화 시각": {"date": {"start": synced_at}},
     }
     if source:
@@ -288,25 +275,113 @@ def fetch_reviews(client: ImwebClient) -> list[dict[str, Any]]:
     return list(reviews.values())
 
 
-def existing_pages(notion: NotionClient) -> dict[str, dict[str, Any]]:
-    pages: dict[str, dict[str, Any]] = {}
+def all_pages(notion: NotionClient) -> list[dict[str, Any]]:
+    pages: list[dict[str, Any]] = []
     cursor: str | None = None
     while True:
         body: dict[str, Any] = {"page_size": 100}
         if cursor:
             body["start_cursor"] = cursor
         result = notion._request("POST", f"/databases/{notion.database_id}/query", json=body)
-        for page in result.get("results", []):
-            rich_text = (page.get("properties", {}).get("리뷰 번호", {}).get("rich_text") or [])
-            key = "".join(part.get("plain_text", part.get("text", {}).get("content", "")) for part in rich_text)
-            if key:
-                pages[key] = page
+        pages.extend(result.get("results", []))
         if not result.get("has_more"):
             break
         cursor = result.get("next_cursor")
         if not cursor:
             raise RuntimeError("노션 페이지 목록의 다음 커서가 없습니다.")
     return pages
+
+
+def plain_text(parts: list[dict[str, Any]]) -> str:
+    return "".join(part.get("plain_text", part.get("text", {}).get("content", "")) for part in parts)
+
+
+def body_hash(body: str) -> str:
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def body_blocks(body: str, images: list[str]) -> list[dict[str, Any]]:
+    if len(images) > 98:
+        raise ValueError("구매평 사진이 한 페이지 생성 한도를 넘습니다.")
+    return [
+        {"object": "block", "type": "heading_2", "heading_2": {"rich_text": chunks("리뷰 내용")}},
+        {"object": "block", "type": "paragraph", "paragraph": {"rich_text": chunks(body)}},
+    ] + [{"object": "block", "type": "image", "image": {"type": "external", "external": {"url": url}}} for url in images]
+
+
+def get_children(notion: NotionClient, page_id: str) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    cursor = None
+    while True:
+        params: dict[str, Any] = {"page_size": 100}
+        if cursor:
+            params["start_cursor"] = cursor
+        response = notion._request("GET", f"/blocks/{page_id}/children", params=params)
+        result.extend(response.get("results", []))
+        if not response.get("has_more"):
+            return result
+        cursor = response.get("next_cursor")
+        if not cursor:
+            raise RuntimeError("구매평 본문 조회 커서가 없습니다.")
+
+
+def ensure_body(notion: NotionClient, page_id: str, body: str, images: list[str], *, preserve_existing: bool = False) -> str:
+    blocks = get_children(notion, page_id)
+    headings = [i for i, block in enumerate(blocks) if block.get("type") == "heading_2"
+                and plain_text(block["heading_2"].get("rich_text", [])) == "리뷰 내용"]
+    if len(headings) > 1:
+        raise RuntimeError(f"리뷰 내용 영역이 중복되어 있습니다: {page_id}")
+    if headings:
+        offset = headings[0] + 1
+        if offset >= len(blocks) or blocks[offset].get("type") != "paragraph":
+            raise RuntimeError(f"리뷰 내용의 본문 블록을 확인할 수 없습니다: {page_id}")
+        paragraph = blocks[offset]
+        current = plain_text(paragraph["paragraph"].get("rich_text", []))
+        if current != body:
+            if preserve_existing:
+                raise RuntimeError(f"기존 본문과 내용 열이 다릅니다. 원문을 보존하고 중단합니다: {page_id}")
+            result = notion._request("PATCH", f"/blocks/{paragraph['id']}", json={"paragraph": {"rich_text": chunks(body)}})
+            if plain_text(result["paragraph"].get("rich_text", [])) != body:
+                raise RuntimeError("리뷰 본문 쓰기 검증 실패")
+        text_id = paragraph["id"]
+        present = {b.get("image", {}).get("external", {}).get("url") for b in blocks if b.get("type") == "image"}
+        additions = [b for b in body_blocks(body, images)[2:] if b["image"]["external"]["url"] not in present]
+        if additions:
+            notion._request("PATCH", f"/blocks/{page_id}/children", json={"children": additions})
+    else:
+        response = notion._request("PATCH", f"/blocks/{page_id}/children", json={"children": body_blocks(body, images)})
+        results = response.get("results", [])
+        if len(results) < 2 or plain_text(results[1].get("paragraph", {}).get("rich_text", [])) != body:
+            raise RuntimeError("리뷰 본문 추가 검증 실패")
+        text_id = results[1]["id"]
+    return text_id
+
+
+def property_fingerprint(properties: dict[str, Any]) -> str:
+    values = comparable_properties({k: v for k, v in properties.items() if k != "동기화 시각"})
+    return hashlib.sha256(json.dumps(values, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
+def existing_pages(notion: NotionClient, state: ReviewState) -> dict[str, dict[str, Any]]:
+    pages = all_pages(notion)
+    by_id = {p["id"].replace("-", ""): p for p in pages}
+    records = state.data["reviews"]
+    if pages and not records:
+        raise RuntimeError("구매평 동기화 기록이 없습니다. 본문 이전 작업을 먼저 완료하세요.")
+    mapped = {r["page_id"].replace("-", "") for r in records.values()}
+    for key, pending in list(state.data["pending"].items()):
+        candidates = [p for p in pages if p["id"].replace("-", "") not in mapped
+                      and property_fingerprint(p["properties"]) == pending["fingerprint"]]
+        if len(candidates) != 1:
+            raise RuntimeError(f"응답이 끊긴 구매평 {key}의 생성 여부를 확정할 수 없습니다. 중복 방지를 위해 중단합니다.")
+        page = candidates[0]
+        # A create request contains both properties and body atomically.
+        records[key] = {"page_id": page["id"], "body_hash": pending["body_hash"], "images": pending["images"]}
+        mapped.add(page["id"].replace("-", ""))
+        del state.data["pending"][key]
+        state.save()
+    return {key: by_id[r["page_id"].replace("-", "")] for key, r in records.items()
+            if r["page_id"].replace("-", "") in by_id}
 
 
 def comparable_properties(properties: dict[str, Any]) -> dict[str, Any]:
@@ -340,17 +415,21 @@ def sync() -> tuple[int, int, int]:
     load_dotenv(Path(__file__).resolve().parent / ".env")
     database_id = os.getenv("NOTION_REVIEW_DATABASE_ID", REVIEW_DATABASE_ID)
     notion = NotionClient(database_id)
-    required = {"리뷰", "리뷰 번호", "작성일", "평점", "상품 옵션", "작성자", "내용", "사진", "출처", "포토 리뷰", "비밀글", "숨김", "동기화 시각"}
-    missing = required - set(notion.get_database().get("properties", {}))
+    schema = notion.get_database().get("properties", {})
+    required = {"리뷰", "작성일", "평점", "상품 옵션", "작성자", "사진", "출처", "포토 리뷰", "동기화 시각"}
+    missing = required - set(schema)
     if missing:
         raise RuntimeError(f"노션 구매평 DB에 필요한 속성이 없습니다: {', '.join(sorted(missing))}")
+    if {"내용", "리뷰 번호", "비밀글", "숨김"} & set(schema):
+        raise RuntimeError("구매평 본문 이전 작업이 아직 완료되지 않았습니다.")
+    state = ReviewState(database_id)
 
     imweb = ImwebClient()
     imweb.authenticate()
     reviews = fetch_reviews(imweb)
     # Apply the visible warning color first, including on existing reviews.
     reviews.sort(key=lambda review: 0 if review.get("rating") is not None and float(review["rating"]) <= 3 else 1)
-    known = existing_pages(notion)
+    known = existing_pages(notion, state)
     product_names: dict[str, str] = {}
     created = updated = 0
     rejected: list[str] = []
@@ -376,22 +455,42 @@ def sync() -> tuple[int, int, int]:
                 product_names[prod_no] = ""
             time.sleep(float(os.getenv("REQUEST_SLEEP_SECONDS", "0.35")))
         props = review_properties(review, product_names.get(prod_no, ""), synced_at)
+        body, images = review_content(str(review.get("body") or ""))
+        digest = body_hash(body)
         if old:
+            record = state.data["reviews"][key]
             desired = comparable_properties({k: v for k, v in props.items() if k != "동기화 시각"})
             current = comparable_properties({k: old.get("properties", {}).get(k, {}) for k in desired})
-            if desired == current:
+            body_changed = record.get("body_hash") != digest or record.get("images") != images
+            if desired == current and not body_changed:
                 continue
-            notion._request("PATCH", f"/pages/{old['id']}", json={"properties": props})
+            if body_changed:
+                record["text_block_id"] = ensure_body(notion, old["id"], body, images)
+                record.update(body_hash=digest, images=images)
+            if desired != current:
+                notion._request("PATCH", f"/pages/{old['id']}", json={"properties": props})
+            state.save()
             updated += 1
         else:
+            if key in state.data["reviews"]:
+                # Respect pages the owner has archived or deleted.
+                continue
+            state.data["pending"][key] = {"fingerprint": property_fingerprint(props), "body_hash": digest, "images": images}
+            state.save()
             try:
-                notion._request("POST", "/pages", json={"parent": {"database_id": database_id}, "properties": props})
+                page = notion._request("POST", "/pages", json={"parent": {"database_id": database_id}, "properties": props, "children": body_blocks(body, images)})
             except requests.HTTPError as exc:
                 if exc.response is None or exc.response.status_code != 400:
                     raise
                 logging.error("구매평 #%s 노션 입력 거절: %s", key, exc.response.text[:1000])
+                del state.data["pending"][key]
+                state.save()
                 rejected.append(key)
                 continue
+            state.data["reviews"][key] = {"page_id": page["id"], "body_hash": digest, "images": images}
+            del state.data["pending"][key]
+            state.save()
+            known[key] = page
             created += 1
         if index % 25 == 0:
             logging.info("노션 구매평 처리: %s/%s건", index, len(reviews))
@@ -405,3 +504,4 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     total, created, updated = sync()
     logging.info("완료: 아임웹 %s건, 노션 신규 %s건, 수정 %s건", total, created, updated)
+
