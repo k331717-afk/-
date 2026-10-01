@@ -325,7 +325,13 @@ def get_children(notion: NotionClient, page_id: str) -> list[dict[str, Any]]:
             raise RuntimeError("구매평 본문 조회 커서가 없습니다.")
 
 
-def ensure_body(notion: NotionClient, page_id: str, body: str, images: list[str], *, preserve_existing: bool = False) -> str:
+def imported_text(value: str) -> str:
+    """Compare only formatting lost in the earlier Markdown import."""
+    value = re.sub(r"\\([~])", r"\1", value)
+    return "\n".join(line.rstrip() for line in value.splitlines()).strip()
+
+
+def ensure_body(notion: NotionClient, page_id: str, body: str, images: list[str], *, preserve_existing: bool = False, allow_format_repair: bool = False) -> str:
     blocks = get_children(notion, page_id)
     headings = [i for i, block in enumerate(blocks) if block.get("type") == "heading_2"
                 and plain_text(block["heading_2"].get("rich_text", [])) == "리뷰 내용"]
@@ -338,7 +344,7 @@ def ensure_body(notion: NotionClient, page_id: str, body: str, images: list[str]
         paragraph = blocks[offset]
         current = plain_text(paragraph["paragraph"].get("rich_text", []))
         if current != body:
-            if preserve_existing:
+            if preserve_existing and not (allow_format_repair and imported_text(current) == imported_text(body)):
                 raise RuntimeError(f"기존 본문과 내용 열이 다릅니다. 원문을 보존하고 중단합니다: {page_id}")
             result = notion._request("PATCH", f"/blocks/{paragraph['id']}", json={"paragraph": {"rich_text": chunks(body)}})
             if plain_text(result["paragraph"].get("rich_text", [])) != body:
@@ -507,4 +513,3 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     total, created, updated = sync()
     logging.info("완료: 아임웹 %s건, 노션 신규 %s건, 수정 %s건", total, created, updated)
-
