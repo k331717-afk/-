@@ -12,7 +12,7 @@ from pathlib import Path
 
 from review_sync import (NotionClient, REVIEW_DATABASE_ID, all_pages, body_hash,
                          ensure_body, plain_text, review_content)
-from review_state import ReviewState
+from review_state import ReviewState, encode_state
 
 REMOVED = {"내용", "리뷰 번호", "비밀글", "숨김"}
 BACKUP = Path("review-migration-backup.json")
@@ -44,7 +44,10 @@ def prepare(notion, state):
     database = notion.get_database()
     pages = all_pages(notion)
     if not (REMOVED & set(database.get("properties", {}))):
-        BACKUP.write_text(json.dumps({"already_complete": True, "count": len(pages)}, ensure_ascii=False), encoding="utf-8")
+        payload = {"already_complete": True, "count": len(pages)}
+        BACKUP.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        Path("review-migration-backup.enc").write_text(encode_state(payload), encoding="utf-8")
+        state.save()
         logging.info("이미 이전 완료: %s건", len(pages))
         return
     if not {"내용", "리뷰 번호"} <= set(database["properties"]):
@@ -54,6 +57,7 @@ def prepare(notion, state):
         raise RuntimeError("리뷰 번호가 없거나 중복된 페이지가 있습니다.")
     payload = {"database_id": notion.database_id, "database": database, "pages": pages}
     BACKUP.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    Path("review-migration-backup.enc").write_text(encode_state(payload), encoding="utf-8")
     for key, page in zip(keys, pages):
         record = state.data["reviews"].setdefault(key, {})
         if record.get("page_id") and record["page_id"].replace("-", "") != page["id"].replace("-", ""):
