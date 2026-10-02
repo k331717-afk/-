@@ -1,4 +1,4 @@
-"""Move file-property photos into review bodies, retaining the property schema."""
+"""Move file-property photos into review bodies before user-authorized removal."""
 from __future__ import annotations
 
 import argparse
@@ -135,22 +135,14 @@ def finalize(notion, state):
             after[p["id"]] = urls
     if before != after:
         raise RuntimeError("이전 중 사진 원본이 바뀌어 사진 속성 삭제를 중단합니다.")
-    # Keep the database property itself. Empty a cell only after its image URLs
-    # have been preserved in both the page body and the encrypted state artifact.
-    def clear_photo_cell(page):
-        response = notion._request("PATCH", f"/pages/{page['page_id']}", json={"properties": {"사진": {"files": []}}})
-        if response.get("properties", {}).get("사진", {}).get("files") != []:
-            raise RuntimeError("사진 첨부값 비우기 검증 실패")
-
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        futures = [pool.submit(clear_photo_cell, p) for p in backup["pages"]]
-        for done, future in enumerate(as_completed(futures), 1):
-            future.result()
-            if done % 100 == 0:
-                logging.info("이전 완료된 사진 첨부값 정리: %s/%s개 리뷰", done, len(before))
+    # The owner explicitly requested removal of the photo property on 2026-10-02.
+    # All image blocks and the encrypted index are preserved before this step.
+    notion._request("PATCH", f"/databases/{notion.database_id}", json={"properties": {"사진": None}})
+    if "사진" in notion.get_database().get("properties", {}):
+        raise RuntimeError("사진 속성 삭제 검증 실패")
     count = sum(len(p["urls"]) for p in backup["pages"])
     Path("review-photo-migration-result.json").write_text(json.dumps({"status": "complete", "reviews": len(before), "photos": count}), encoding="utf-8")
-    logging.info("완료: %s개 리뷰의 이미지 %s개 본문 보존 및 사진 첨부값 정리", len(before), count)
+    logging.info("완료: %s개 리뷰의 이미지 %s개 본문 보존 및 사진 속성 삭제", len(before), count)
 
 
 if __name__ == "__main__":
