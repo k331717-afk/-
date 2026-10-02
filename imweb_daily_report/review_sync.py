@@ -216,10 +216,6 @@ def review_properties(review: dict[str, Any], product_name: str, synced_at: str)
         "리뷰": {"title": title_parts},
         "상품 옵션": {"rich_text": chunks(str(review.get("prod_option") or ""))},
         "작성자": {"rich_text": chunks(str(review.get("nick") or ""))},
-        "사진": {"files": [
-            {"name": f"리뷰 사진 {i}.jpg", "type": "external", "external": {"url": url}}
-            for i, url in enumerate(images, 1)
-        ]},
         "포토 리뷰": {"checkbox": as_bool(review.get("is_photo"))},
         "동기화 시각": {"date": {"start": synced_at}},
     }
@@ -424,7 +420,7 @@ def sync() -> tuple[int, int, int]:
     database_id = os.getenv("NOTION_REVIEW_DATABASE_ID", REVIEW_DATABASE_ID)
     notion = NotionClient(database_id)
     schema = notion.get_database().get("properties", {})
-    required = {"리뷰", "작성일", "평점", "상품 옵션", "작성자", "사진", "출처", "포토 리뷰", "동기화 시각"}
+    required = {"리뷰", "작성일", "평점", "상품 옵션", "작성자", "출처", "포토 리뷰", "동기화 시각"}
     missing = required - set(schema)
     if missing:
         raise RuntimeError(f"노션 구매평 DB에 필요한 속성이 없습니다: {', '.join(sorted(missing))}")
@@ -465,6 +461,9 @@ def sync() -> tuple[int, int, int]:
             time.sleep(float(os.getenv("REQUEST_SLEEP_SECONDS", "0.35")))
         props = review_properties(review, product_names.get(prod_no, ""), synced_at)
         body, images = review_content(str(review.get("body") or ""))
+        # Preserve photos that previously lived only in the Notion file property.
+        saved_images = state.data["reviews"].get(key, {}).get("preserved_images", [])
+        images = list(dict.fromkeys(images + saved_images))
         digest = body_hash(body)
         if old:
             record = state.data["reviews"][key]
