@@ -50,7 +50,7 @@ jobs:
           path: imweb_daily_report/review_sync_state.json
           retention-days: 90
           if-no-files-found: error
-      - name: Clear old photo cells after verified preservation
+      - name: Remove photo property after verified preservation
         run: python imweb_daily_report/migrate_review_photos.py finalize
       - uses: actions/upload-artifact@v4
         with:
