@@ -20,6 +20,7 @@ except ModuleNotFoundError:
 
 from review_sync import review_properties, review_content, body_blocks, ensure_body, existing_pages
 from review_state import encode_state, decode_state
+from migrate_review_photos import ensure_photos, property_images
 
 
 def stored(blocks):
@@ -29,7 +30,7 @@ def stored(blocks):
 class ReviewBodyTests(unittest.TestCase):
     def test_removed_properties_and_low_rating(self):
         props = review_properties({'idx': 1, 'body': '좋아요', 'rating': 3}, '상의', '2026-10-01T00:00:00+09:00')
-        self.assertFalse({'내용', '리뷰 번호', '비밀글', '숨김'} & props.keys())
+        self.assertFalse({'내용', '리뷰 번호', '비밀글', '숨김', '사진'} & props.keys())
         self.assertTrue(props['리뷰']['title'][0]['text']['content'].startswith('🔴'))
 
     def test_html_text_and_images(self):
@@ -85,6 +86,34 @@ class ReviewBodyTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             ensure_body(client, 'page', '원래 내용', [], preserve_existing=True, allow_format_repair=True)
         self.assertEqual(client._request.call_count, 1)
+
+    def test_photo_move_preserves_body_and_existing_image(self):
+        client = Mock()
+        client._request.side_effect = [
+            {'results': stored(body_blocks('사용자가 편집한 리뷰', ['https://example.com/one.jpg']))},
+            {'results': body_blocks('', ['https://example.com/two.jpg'])[2:]},
+        ]
+        self.assertEqual(ensure_photos(client, 'page', ['https://example.com/one.jpg', 'https://example.com/two.jpg']), 1)
+        write = client._request.call_args.kwargs['json']
+        self.assertEqual([b['type'] for b in write['children']], ['image'])
+        self.assertEqual(write['children'][0]['image']['external']['url'], 'https://example.com/two.jpg')
+
+    def test_photo_retry_is_idempotent(self):
+        client = Mock()
+        client._request.return_value = {'results': stored(body_blocks('리뷰', ['https://example.com/one.jpg']))}
+        self.assertEqual(ensure_photos(client, 'page', ['https://example.com/one.jpg']), 0)
+        self.assertEqual(client._request.call_count, 1)
+
+    def test_photo_move_rejects_expiring_url(self):
+        page = {'properties': {'사진': {'files': [{'type': 'file', 'file': {'url': 'https://example.com/temporary'}}]}}}
+        with self.assertRaises(RuntimeError):
+            property_images(page)
+
+    def test_photo_response_must_contain_saved_image(self):
+        client = Mock()
+        client._request.side_effect = [{'results': stored(body_blocks('리뷰', []))}, {'results': []}]
+        with self.assertRaises(RuntimeError):
+            ensure_photos(client, 'page', ['https://example.com/one.jpg'])
 
     def test_lost_index_fails_closed(self):
         client = Mock(database_id='db')
