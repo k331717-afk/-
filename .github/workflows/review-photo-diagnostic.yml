@@ -32,5 +32,5 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: python -m pip install -r imweb_daily_report/requirements.txt cryptography
-      - name: Inspect the public photo server response
+      - name: Read the public access restriction reason
         run: python imweb_daily_report/probe_review_media.py
