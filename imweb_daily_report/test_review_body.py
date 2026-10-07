@@ -10,6 +10,7 @@ except ModuleNotFoundError:
     requests.Timeout = type('Timeout', (Exception,), {})
     requests.ConnectionError = type('ConnectionError', (Exception,), {})
     requests.HTTPError = type('HTTPError', (Exception,), {})
+    requests.RequestException = type('RequestException', (Exception,), {})
     sys.modules['requests'] = requests
 try:
     import dotenv
@@ -21,6 +22,8 @@ except ModuleNotFoundError:
 from review_sync import review_properties, review_content, body_blocks, ensure_body, existing_pages
 from review_state import encode_state, decode_state
 from migrate_review_photos import ensure_photos, property_images
+from review_media import parse_review_images
+from review_sync import ensure_review_images, collect_missing_images
 
 
 def stored(blocks):
@@ -28,6 +31,63 @@ def stored(blocks):
 
 
 class ReviewBodyTests(unittest.TestCase):
+    def test_native_review_attachment_excludes_product_and_avatar(self):
+        html = '''<div class="modal-left"><div class="_block_no_img"><img src="https://example.com/product.jpg"></div>
+            <div class="item _review_img"><img src="https://example.com/first.jpg"></div>
+            <div class="item _review_img"><img src="https://example.com/second.jpg"/></div></div>
+            <div class="modal-right"><img src="https://example.com/avatar.jpg"><span class="txt _review_body">Review</span></div>'''
+        self.assertEqual(parse_review_images({'msg':'SUCCESS','idx':123,'html':html}, '123'),
+                         ['https://example.com/first.jpg','https://example.com/second.jpg'])
+
+    def test_public_review_identity_and_structure_are_required(self):
+        for payload in [{'msg':'SUCCESS','idx':2,'html':'<div class="_review_body">X</div>'},
+                        {'msg':'SUCCESS','idx':1,'html':'<img src="https://example.com/product.jpg">'},
+                        {'msg':'ERROR','idx':1}]:
+            with self.assertRaises(RuntimeError):
+                parse_review_images(payload, '1')
+
+    def test_public_html_images_deduplicate_and_reject_invalid_scheme(self):
+        html = '<div class="_review_body"><br><img src="https://example.com/a.jpg?a=1&amp;b=2"><img src="javascript:x"><img src="https://example.com/a.jpg?a=1&amp;b=2"></div>'
+        self.assertEqual(parse_review_images({'msg':'SUCCESS','idx':1,'html':html},'1'), ['https://example.com/a.jpg?a=1&b=2'])
+
+    def test_crlf_normalization_prevents_false_write_failure(self):
+        body, images = review_content('첫 줄\r\n둘째 줄\r\n')
+        self.assertEqual(body, '첫 줄\n둘째 줄\n')
+        client = Mock()
+        client._request.return_value = {'results': stored(body_blocks(body, images))}
+        ensure_body(client, 'page', body, images)
+        self.assertEqual(client._request.call_count, 1)
+
+    def test_missing_native_photo_is_fetched_and_failed_photo_retries(self):
+        review = {'idx':123, 'is_photo':True}
+        with patch('review_sync.fetch_review_images', return_value=['https://example.com/a.jpg']) as fetch:
+            self.assertEqual(collect_missing_images(review, []), (['https://example.com/a.jpg'], False))
+            fetch.assert_called_once_with('123')
+        with patch('review_sync.fetch_review_images', return_value=[]):
+            self.assertEqual(collect_missing_images(review, []), ([], True))
+
+    def test_private_review_is_not_requested_publicly(self):
+        with patch('review_sync.fetch_review_images') as fetch:
+            self.assertEqual(collect_missing_images({'idx':1,'is_photo':True,'is_secret':True}, []), ([], True))
+            fetch.assert_not_called()
+
+    def test_sync_photo_repair_preserves_user_edits_and_is_idempotent(self):
+        client = Mock()
+        original = stored(body_blocks('사용자가 편집한 내용', ['https://example.com/a.jpg']))
+        client._request.side_effect = [{'results':original}, {'results':body_blocks('', ['https://example.com/b.jpg'])[2:]}]
+        self.assertEqual(ensure_review_images(client, 'page', ['https://example.com/a.jpg','https://example.com/b.jpg']), 1)
+        children = client._request.call_args.kwargs['json']['children']
+        self.assertEqual([b['type'] for b in children], ['image'])
+        client._request.side_effect = None
+        client._request.return_value = {'results':original + children}
+        self.assertEqual(ensure_review_images(client, 'page', ['https://example.com/a.jpg','https://example.com/b.jpg']), 0)
+
+    def test_photo_append_response_is_verified(self):
+        client = Mock()
+        client._request.side_effect = [{'results':stored(body_blocks('리뷰', []))}, {'results':[]}]
+        with self.assertRaises(RuntimeError):
+            ensure_review_images(client, 'page', ['https://example.com/a.jpg'])
+
     def test_removed_properties_and_low_rating(self):
         props = review_properties({'idx': 1, 'body': '좋아요', 'rating': 3}, '상의', '2026-10-01T00:00:00+09:00')
         self.assertFalse({'내용', '리뷰 번호', '비밀글', '숨김', '사진'} & props.keys())
