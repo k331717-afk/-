@@ -390,8 +390,9 @@ def collect_missing_images(review, images):
         return images, True
     try:
         found = fetch_review_images(review_key(review))
-    except (requests.RequestException, RuntimeError, ValueError):
-        logging.warning("구매평 #%s 첨부사진 조회 실패; 다음 실행에서 재시도합니다.", review_key(review))
+    except (requests.RequestException, RuntimeError, ValueError) as exc:
+        logging.warning("구매평 #%s 첨부사진 조회 실패 (%s, HTTP %s); 다음 실행에서 재시도합니다.",
+                        review_key(review), type(exc).__name__, getattr(getattr(exc, "response", None), "status_code", None))
         return images, True
     return list(dict.fromkeys(images + found)), not bool(found)
 
