@@ -1,0 +1,53 @@
+name: Repair Weekly Review Photos
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [.github/workflows/review-photo-repair.yml]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: product-review-database-writes
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      IMWEB_API_KEY: ${{ secrets.IMWEB_API_KEY }}
+      IMWEB_SECRET_KEY: ${{ secrets.IMWEB_SECRET_KEY }}
+      IMWEB_SHOP_CODE: ${{ secrets.IMWEB_SHOP_CODE }}
+      REVIEW_NOTION_TOKEN: ${{ secrets.REVIEW_NOTION_TOKEN }}
+      REVIEW_STATE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      NOTION_REVIEW_DATABASE_ID: e7caefbd-53c1-428a-bf90-c8ef399d77d2
+      PYTHONUNBUFFERED: "1"
+      IMWEB_REVIEW_PAGE_SIZE: "100"
+      IMWEB_REVIEW_MAX_PAGES: "500"
+      REQUEST_SLEEP_SECONDS: "0.35"
+      NOTION_WRITE_SLEEP_SECONDS: "0.35"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install -r imweb_daily_report/requirements.txt cryptography
+      - name: Validate review text and photo handling
+        run: python imweb_daily_report/test_review_body.py
+      - name: Restore photos on the three newly synced reviews
+        run: python imweb_daily_report/repair_review_photos.py 129418004 129417987 129412167
+      - name: Complete the interrupted weekly review sync
+        run: python imweb_daily_report/review_sync.py
+      - name: Preserve encrypted review identity and pending requests
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imweb-review-sync-state
+          path: imweb_daily_report/review_sync_state.json
+          retention-days: 90
+          if-no-files-found: error
