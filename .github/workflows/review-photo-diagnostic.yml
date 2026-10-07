@@ -1,0 +1,36 @@
+name: Diagnose Missing Review Photos
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [.github/workflows/review-photo-diagnostic.yml]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: product-review-database-writes
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      IMWEB_API_KEY: ${{ secrets.IMWEB_API_KEY }}
+      IMWEB_SECRET_KEY: ${{ secrets.IMWEB_SECRET_KEY }}
+      IMWEB_SHOP_CODE: ${{ secrets.IMWEB_SHOP_CODE }}
+      REVIEW_NOTION_TOKEN: ${{ secrets.REVIEW_NOTION_TOKEN }}
+      REVIEW_STATE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install -r imweb_daily_report/requirements.txt cryptography
+      - name: Inspect review response structure without exposing content
+        run: python imweb_daily_report/diagnose_review_photos.py
