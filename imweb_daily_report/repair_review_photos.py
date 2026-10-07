@@ -2,7 +2,7 @@
 import argparse
 import logging
 from review_sync import (REVIEW_DATABASE_ID, ImwebClient, NotionClient,
-    imweb_get, review_content, collect_missing_images, ensure_review_images)
+    imweb_get, review_content, collect_missing_images, ensure_review_images, get_children)
 from review_state import ReviewState
 
 
@@ -21,7 +21,13 @@ def repair(review_ids):
         if str(review.get("idx")) != key:
             raise RuntimeError("복구 대상 구매평 번호가 다릅니다.")
         _, embedded = review_content(str(review.get("body") or ""))
-        images = list(dict.fromkeys(embedded + record.get("preserved_images", []) + record.get("images", [])))
+        # Include photos already restored through Notion, so retries reconcile
+        # the identity index without duplicating or depending on the storefront.
+        blocks = get_children(notion, record["page_id"])
+        restored = [b.get("image", {}).get("external", {}).get("url")
+                    for b in blocks if b.get("type") == "image"]
+        restored = [url for url in restored if url]
+        images = list(dict.fromkeys(embedded + record.get("preserved_images", []) + record.get("images", []) + restored))
         images, pending = collect_missing_images(review, images)
         if pending or not images:
             raise RuntimeError(f"구매평 #{key} 사진을 확인할 수 없습니다.")
