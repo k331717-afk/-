@@ -8,6 +8,7 @@ from review_state import ReviewState
 
 def repair(review_ids):
     state = ReviewState(REVIEW_DATABASE_ID)
+    state.save()
     notion = NotionClient(REVIEW_DATABASE_ID)
     imweb = ImwebClient()
     imweb.authenticate()
