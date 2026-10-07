@@ -35,6 +35,8 @@ jobs:
           python-version: "3.11"
           cache: "pip"
       - run: python -m pip install -r imweb_daily_report/requirements.txt cryptography
+      - name: Validate review text and photo handling
+        run: python imweb_daily_report/test_review_body.py
       - name: Sync reviews to Notion
         run: python imweb_daily_report/review_sync.py
       - name: Preserve review sync identity and pending requests
