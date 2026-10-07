@@ -41,8 +41,6 @@ jobs:
         run: python imweb_daily_report/test_review_body.py
       - name: Restore photos on the three newly synced reviews
         run: python imweb_daily_report/repair_review_photos.py 129418004 129417987 129412167
-      - name: Complete the interrupted weekly review sync
-        run: python imweb_daily_report/review_sync.py
       - name: Preserve encrypted review identity and pending requests
         if: always()
         uses: actions/upload-artifact@v4
