@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 import requests
 from dotenv import load_dotenv
 from review_state import ReviewState
+from review_media import fetch_review_images
 
 KST = ZoneInfo("Asia/Seoul")
 REVIEW_DATABASE_ID = "e7caefbd-53c1-428a-bf90-c8ef399d77d2"
@@ -186,6 +187,8 @@ class ReviewHtmlParser(HTMLParser):
 
 
 def review_content(body: str) -> tuple[str, list[str]]:
+    # Notion stores CRLF as LF. Normalize before hashing, writing and verifying.
+    body = body.replace("\r\n", "\n").replace("\r", "\n")
     if not re.search(r"<\s*(?:img|p|div|br|span|a|ul|li)\b", body, re.IGNORECASE):
         return body, []
     parser = ReviewHtmlParser()
@@ -346,10 +349,7 @@ def ensure_body(notion: NotionClient, page_id: str, body: str, images: list[str]
             if plain_text(result["paragraph"].get("rich_text", [])) != body:
                 raise RuntimeError("리뷰 본문 쓰기 검증 실패")
         text_id = paragraph["id"]
-        present = {b.get("image", {}).get("external", {}).get("url") for b in blocks if b.get("type") == "image"}
-        additions = [b for b in body_blocks(body, images)[2:] if b["image"]["external"]["url"] not in present]
-        if additions:
-            notion._request("PATCH", f"/blocks/{page_id}/children", json={"children": additions})
+        ensure_review_images(notion, page_id, images, blocks=blocks)
     else:
         response = notion._request("PATCH", f"/blocks/{page_id}/children", json={"children": body_blocks(body, images)})
         results = response.get("results", [])
@@ -357,6 +357,43 @@ def ensure_body(notion: NotionClient, page_id: str, body: str, images: list[str]
             raise RuntimeError("리뷰 본문 추가 검증 실패")
         text_id = results[1]["id"]
     return text_id
+
+
+def ensure_review_images(notion: NotionClient, page_id: str, images: list[str], *, blocks=None) -> int:
+    """Append and verify images without overwriting user-edited review text."""
+    if blocks is None:
+        blocks = get_children(notion, page_id)
+    headings = [b for b in blocks if b.get("type") == "heading_2"
+                and plain_text(b["heading_2"].get("rich_text", [])) == "리뷰 내용"]
+    if len(headings) != 1:
+        raise RuntimeError("사진을 넣을 리뷰 내용 영역을 확인할 수 없습니다.")
+    def urls(items):
+        return {b.get("image", {}).get("external", {}).get("url")
+                for b in items if b.get("type") == "image"}
+    present = urls(blocks)
+    missing = [url for url in dict.fromkeys(images) if url not in present]
+    for offset in range(0, len(missing), 100):
+        additions = [{"object": "block", "type": "image", "image": {
+            "type": "external", "external": {"url": url}}} for url in missing[offset:offset + 100]]
+        response = notion._request("PATCH", f"/blocks/{page_id}/children", json={"children": additions})
+        present.update(urls(response.get("results", [])))
+    if not set(images) <= present:
+        raise RuntimeError("리뷰 사진 저장 검증 실패")
+    return len(missing)
+
+
+def collect_missing_images(review, images):
+    if images or not as_bool(review.get("is_photo")):
+        return images, False
+    # Hidden/secret reviews are never fetched from an unauthenticated surface.
+    if as_bool(review.get("is_hide")) or as_bool(review.get("is_secret")):
+        return images, True
+    try:
+        found = fetch_review_images(review_key(review))
+    except (requests.RequestException, RuntimeError, ValueError):
+        logging.warning("구매평 #%s 첨부사진 조회 실패; 다음 실행에서 재시도합니다.", review_key(review))
+        return images, True
+    return list(dict.fromkeys(images + found)), not bool(found)
 
 
 def property_fingerprint(properties: dict[str, Any]) -> str:
@@ -378,7 +415,8 @@ def existing_pages(notion: NotionClient, state: ReviewState) -> dict[str, dict[s
             raise RuntimeError(f"응답이 끊긴 구매평 {key}의 생성 여부를 확정할 수 없습니다. 중복 방지를 위해 중단합니다.")
         page = candidates[0]
         # A create request contains both properties and body atomically.
-        records[key] = {"page_id": page["id"], "body_hash": pending["body_hash"], "images": pending["images"]}
+        records[key] = {"page_id": page["id"], "body_hash": pending["body_hash"], "images": pending["images"],
+                        "photo_pending": pending.get("photo_pending", False)}
         mapped.add(page["id"].replace("-", ""))
         del state.data["pending"][key]
         state.save()
@@ -438,6 +476,7 @@ def sync() -> tuple[int, int, int]:
     product_names: dict[str, str] = {}
     created = updated = 0
     rejected: list[str] = []
+    unresolved_photos: list[str] = []
     synced_at = datetime.now(KST).isoformat()
     for index, review in enumerate(reviews, 1):
         key = review_key(review)
@@ -462,19 +501,24 @@ def sync() -> tuple[int, int, int]:
         props = review_properties(review, product_names.get(prod_no, ""), synced_at)
         body, images = review_content(str(review.get("body") or ""))
         # Preserve photos that previously lived only in the Notion file property.
-        saved_images = state.data["reviews"].get(key, {}).get("preserved_images", [])
+        record = state.data["reviews"].get(key, {})
+        saved_images = record.get("preserved_images", []) + record.get("images", [])
         images = list(dict.fromkeys(images + saved_images))
         digest = body_hash(body)
         if old:
-            record = state.data["reviews"][key]
             desired = comparable_properties({k: v for k, v in props.items() if k != "동기화 시각"})
             current = comparable_properties({k: old.get("properties", {}).get(k, {}) for k in desired})
             body_changed = record.get("body_hash") != digest or record.get("images") != images
-            if desired == current and not body_changed:
+            if desired == current and not body_changed and not record.get("photo_pending"):
                 continue
-            if body_changed:
+            images, photo_pending = collect_missing_images(review, images)
+            if record.get("body_hash") != digest:
                 record["text_block_id"] = ensure_body(notion, old["id"], body, images)
-                record.update(body_hash=digest, images=images)
+            elif record.get("images") != images:
+                ensure_review_images(notion, old["id"], images)
+            record.update(body_hash=digest, images=images, photo_pending=photo_pending)
+            if photo_pending:
+                unresolved_photos.append(key)
             if desired != current:
                 notion._request("PATCH", f"/pages/{old['id']}", json={"properties": props})
             state.save()
@@ -483,19 +527,22 @@ def sync() -> tuple[int, int, int]:
             if key in state.data["reviews"]:
                 # Respect pages the owner has archived or deleted.
                 continue
-            state.data["pending"][key] = {"fingerprint": property_fingerprint(props), "body_hash": digest, "images": images}
+            images, photo_pending = collect_missing_images(review, images)
+            state.data["pending"][key] = {"fingerprint": property_fingerprint(props), "body_hash": digest, "images": images, "photo_pending": photo_pending}
             state.save()
             try:
                 page = notion._request("POST", "/pages", json={"parent": {"database_id": database_id}, "properties": props, "children": body_blocks(body, images)})
             except requests.HTTPError as exc:
                 if exc.response is None or exc.response.status_code != 400:
                     raise
-                logging.error("구매평 #%s 노션 입력 거절: %s", key, exc.response.text[:1000])
+                logging.error("구매평 #%s 노션 입력 거절: HTTP 400", key)
                 del state.data["pending"][key]
                 state.save()
                 rejected.append(key)
                 continue
-            state.data["reviews"][key] = {"page_id": page["id"], "body_hash": digest, "images": images}
+            state.data["reviews"][key] = {"page_id": page["id"], "body_hash": digest, "images": images, "photo_pending": photo_pending}
+            if photo_pending:
+                unresolved_photos.append(key)
             del state.data["pending"][key]
             state.save()
             known[key] = page
@@ -505,6 +552,8 @@ def sync() -> tuple[int, int, int]:
         time.sleep(float(os.getenv("NOTION_WRITE_SLEEP_SECONDS", "0.35")))
     if rejected:
         raise RuntimeError(f"노션이 거절한 구매평 {len(rejected)}건: {', '.join(rejected[:20])}")
+    if unresolved_photos:
+        raise RuntimeError(f"텍스트 저장 완료, 첨부사진 재시도 대상 {len(unresolved_photos)}건: {', '.join(unresolved_photos[:20])}")
     return len(reviews), created, updated
 
 
