@@ -1,0 +1,25 @@
+name: Diagnose Review Text Roundtrip
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: product-review-database-writes
+  cancel-in-progress: false
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      IMWEB_API_KEY: ${{ secrets.IMWEB_API_KEY }}
+      IMWEB_SECRET_KEY: ${{ secrets.IMWEB_SECRET_KEY }}
+      REVIEW_NOTION_TOKEN: ${{ secrets.REVIEW_NOTION_TOKEN }}
+      REVIEW_STATE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -r imweb_daily_report/requirements.txt cryptography
+      - run: python imweb_daily_report/diagnose_review_roundtrip.py
