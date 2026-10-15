@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 import requests
 from dotenv import load_dotenv
 from review_state import ReviewState
-from review_media import fetch_review_images
+from review_media import fetch_review_images, photo_api_ready
 
 KST = ZoneInfo("Asia/Seoul")
 REVIEW_DATABASE_ID = "e7caefbd-53c1-428a-bf90-c8ef399d77d2"
@@ -186,9 +186,14 @@ class ReviewHtmlParser(HTMLParser):
         self.text.append(data)
 
 
+def notion_text(body: str) -> str:
+    # Live Notion PATCH and GET both discard U+200B (zero-width space).
+    # Preserve other Unicode format characters, including emoji joiners.
+    return body.replace("\r\n", "\n").replace("\r", "\n").replace("\u200b", "")
+
+
 def review_content(body: str) -> tuple[str, list[str]]:
-    # Notion stores CRLF as LF. Normalize before hashing, writing and verifying.
-    body = body.replace("\r\n", "\n").replace("\r", "\n")
+    body = notion_text(body)
     if not re.search(r"<\s*(?:img|p|div|br|span|a|ul|li)\b", body, re.IGNORECASE):
         return body, []
     parser = ReviewHtmlParser()
@@ -196,7 +201,7 @@ def review_content(body: str) -> tuple[str, list[str]]:
     text = "".join(parser.text).replace("\xa0", " ")
     text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(r"\n[ \t]+", "\n", text)
-    return re.sub(r"\n{3,}", "\n\n", text).strip(), parser.images
+    return notion_text(re.sub(r"\n{3,}", "\n\n", text).strip()), parser.images
 
 
 def review_properties(review: dict[str, Any], product_name: str, synced_at: str) -> dict[str, Any]:
@@ -300,6 +305,7 @@ def body_hash(body: str) -> str:
 
 
 def body_blocks(body: str, images: list[str]) -> list[dict[str, Any]]:
+    body = notion_text(body)
     if len(images) > 98:
         raise ValueError("구매평 사진이 한 페이지 생성 한도를 넘습니다.")
     return [
@@ -331,6 +337,7 @@ def imported_text(value: str) -> str:
 
 
 def ensure_body(notion: NotionClient, page_id: str, body: str, images: list[str], *, preserve_existing: bool = False, allow_format_repair: bool = False) -> str:
+    body = notion_text(body)
     blocks = get_children(notion, page_id)
     headings = [i for i, block in enumerate(blocks) if block.get("type") == "heading_2"
                 and plain_text(block["heading_2"].get("rich_text", [])) == "리뷰 내용"]
@@ -347,7 +354,7 @@ def ensure_body(notion: NotionClient, page_id: str, body: str, images: list[str]
                 raise RuntimeError(f"기존 본문과 내용 열이 다릅니다. 원문을 보존하고 중단합니다: {page_id}")
             result = notion._request("PATCH", f"/blocks/{paragraph['id']}", json={"paragraph": {"rich_text": chunks(body)}})
             if plain_text(result["paragraph"].get("rich_text", [])) != body:
-                raise RuntimeError("리뷰 본문 쓰기 검증 실패")
+                raise RuntimeError(f"리뷰 본문 쓰기 검증 실패: page={page_id}, expected_length={len(body)}, actual_length={len(plain_text(result['paragraph'].get('rich_text', [])))}")
         text_id = paragraph["id"]
         ensure_review_images(notion, page_id, images, blocks=blocks)
     else:
@@ -479,6 +486,10 @@ def sync() -> tuple[int, int, int]:
     rejected: list[str] = []
     unresolved_photos: list[str] = []
     synced_at = datetime.now(KST).isoformat()
+    text_only = os.getenv("REVIEW_SYNC_MODE", "sync") == "text-only"
+    photos_available = photo_api_ready() and not text_only
+    if not photos_available:
+        logging.warning("공식 사진 API 연결 대기: 본문을 동기화하고 사진 재시도 기록을 보존합니다.")
     for index, review in enumerate(reviews, 1):
         key = review_key(review)
         old = known.get(key)
@@ -506,13 +517,21 @@ def sync() -> tuple[int, int, int]:
         saved_images = record.get("preserved_images", []) + record.get("images", [])
         images = list(dict.fromkeys(images + saved_images))
         digest = body_hash(body)
+        photos_available = photos_available and photo_api_ready()
         if old:
             desired = comparable_properties({k: v for k, v in props.items() if k != "동기화 시각"})
             current = comparable_properties({k: old.get("properties", {}).get(k, {}) for k in desired})
             body_changed = record.get("body_hash") != digest or record.get("images") != images
             if desired == current and not body_changed and not record.get("photo_pending"):
                 continue
-            images, photo_pending = collect_missing_images(review, images)
+            if not photos_available and desired == current and not body_changed:
+                if record.get("photo_pending"):
+                    unresolved_photos.append(key)
+                continue
+            if photos_available:
+                images, photo_pending = collect_missing_images(review, images)
+            else:
+                photo_pending = as_bool(review.get("is_photo")) and not bool(images)
             if record.get("body_hash") != digest:
                 record["text_block_id"] = ensure_body(notion, old["id"], body, images)
             elif record.get("images") != images:
@@ -528,7 +547,10 @@ def sync() -> tuple[int, int, int]:
             if key in state.data["reviews"]:
                 # Respect pages the owner has archived or deleted.
                 continue
-            images, photo_pending = collect_missing_images(review, images)
+            if photos_available:
+                images, photo_pending = collect_missing_images(review, images)
+            else:
+                photo_pending = as_bool(review.get("is_photo")) and not bool(images)
             state.data["pending"][key] = {"fingerprint": property_fingerprint(props), "body_hash": digest, "images": images, "photo_pending": photo_pending}
             state.save()
             try:
@@ -554,7 +576,11 @@ def sync() -> tuple[int, int, int]:
     if rejected:
         raise RuntimeError(f"노션이 거절한 구매평 {len(rejected)}건: {', '.join(rejected[:20])}")
     if unresolved_photos:
-        raise RuntimeError(f"텍스트 저장 완료, 첨부사진 재시도 대상 {len(unresolved_photos)}건: {', '.join(unresolved_photos[:20])}")
+        logging.warning("본문 처리 완료, 첨부사진 대기: %s건", len(unresolved_photos))
+        if not text_only:
+            if not photos_available:
+                raise RuntimeError("공식 사진 API 인증이 필요합니다: IMWEB_REVIEW_ACCESS_TOKEN / IMWEB_REVIEW_SITE_CODE. 본문과 사진 재시도 기록은 저장됐습니다.")
+            raise RuntimeError(f"텍스트 저장 완료, 첨부사진 재시도 대상 {len(unresolved_photos)}건: {', '.join(unresolved_photos[:20])}")
     return len(reviews), created, updated
 
 

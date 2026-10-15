@@ -1,12 +1,15 @@
-"""Read attached images from the store's public review detail view.
+"""Read attached review images through the supported Imweb OAuth API.
 
-Imweb v2 returns is_photo but omits native review attachments. This reader uses
-the same read-only endpoint as the public storefront, without API credentials
-or a logged-in browser session. Product placeholders and avatars are excluded.
+The legacy HTML parser remains for compatibility with existing migration tests.
+Live photo requests use only the official community/review endpoint.
 """
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 import requests
+import os
+from review_openapi import fetch_review_attachments, PhotoAuthenticationError
+
+_photo_auth_rejected = False
 
 STOREFRONT = "https://www.concretebread.com"
 VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input",
@@ -60,12 +63,18 @@ def parse_review_images(payload, review_id):
     return parser.images
 
 
+def photo_api_ready():
+    return bool(not _photo_auth_rejected and os.getenv("IMWEB_REVIEW_ACCESS_TOKEN", "").strip()
+                and os.getenv("IMWEB_REVIEW_SITE_CODE", "").strip())
+
+
 def fetch_review_images(review_id):
-    # This POST reads a review modal; it does not create or update a review.
-    response = requests.post(
-        STOREFRONT + "/ajax/review_detail_view.cm",
-        data={"idx": str(review_id), "review_page": "1", "only_photo": "Y"},
-        timeout=30,
-    )
-    response.raise_for_status()
-    return parse_review_images(response.json(), review_id)
+    """Use the supported API; never call the blocked storefront AJAX URL."""
+    global _photo_auth_rejected
+    try:
+        return fetch_review_attachments(
+            review_id, os.getenv("IMWEB_REVIEW_ACCESS_TOKEN", "").strip(),
+            os.getenv("IMWEB_REVIEW_SITE_CODE", "").strip())
+    except PhotoAuthenticationError:
+        _photo_auth_rejected = True
+        raise

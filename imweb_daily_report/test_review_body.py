@@ -31,6 +31,20 @@ def stored(blocks):
 
 
 class ReviewBodyTests(unittest.TestCase):
+    def test_notion_zero_width_space_roundtrip(self):
+        source = '리뷰\u200b\n👩\u200d👩\u200d👧\u200d👦'
+        expected = '리뷰\n👩\u200d👩\u200d👧\u200d👦'
+        body, _ = review_content(source)
+        self.assertEqual(body, expected)
+        self.assertEqual(review_content('<p>리뷰&#8203;</p>')[0], '리뷰')
+        client = Mock()
+        client._request.side_effect = [
+            {'results': stored(body_blocks('이전 리뷰', []))},
+            stored(body_blocks(expected, []))[1],
+        ]
+        ensure_body(client, 'page', source, [])
+        self.assertEqual(client._request.call_args.kwargs['json']['paragraph']['rich_text'][0]['text']['content'], expected)
+
     def test_native_review_attachment_excludes_product_and_avatar(self):
         html = '''<div class="modal-left"><div class="_block_no_img"><img src="https://example.com/product.jpg"></div>
             <div class="item _review_img"><img src="https://example.com/first.jpg"></div>
