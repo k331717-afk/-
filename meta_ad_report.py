@@ -2,6 +2,8 @@ import os
 import base64
 import requests
 import tempfile
+import time
+from urllib.parse import urlencode
 from datetime import datetime, timedelta, timezone
 from google import genai
 
@@ -198,17 +200,91 @@ def extract_ads(data):
                 return nested
     return [data] if find_first_value(data, ["ad_archive_id", "ad_id"]) else []
 
+APIFY_ACTOR = "api_creators~facebook-ads-library-scraper-api"
+APIFY_ADS_PER_KEYWORD = 10      # 키워드당 최대 광고 수 (리포트는 광고주별 3개씩, 최대 30건만 사용)
+APIFY_MAX_CHARGE_USD = 0.5      # 1회 실행 비용 상한 (무료 크레딧 $5/월 보호용)
+
+
+def ad_library_url(keyword):
+    return "https://www.facebook.com/ads/library/?" + urlencode({
+        "active_status": "active", "ad_type": "all", "country": "KR",
+        "media_type": "all", "q": keyword, "search_type": "keyword_unordered",
+    })
+
+
+def normalize_apify_ad(item):
+    """Apify 결과를 기존 분석 코드가 읽는 필드명으로 맞춤"""
+    snapshot = item.get("snapshot") if isinstance(item.get("snapshot"), dict) else {}
+    body = snapshot.get("body")
+    if isinstance(body, dict):
+        body = body.get("text")
+    if not body:
+        for card in snapshot.get("cards") or []:
+            if isinstance(card, dict) and card.get("body"):
+                body = card.get("body")
+                break
+    started_at = item.get("start_date")
+    if isinstance(started_at, (int, float)) and started_at > 0:
+        started_at = datetime.fromtimestamp(started_at, timezone(timedelta(hours=9))).date().isoformat()
+    ad_id = item.get("ad_archive_id")
+    return {
+        "ad_archive_id": ad_id,
+        "page_name": item.get("page_name"),
+        "ad_creative_bodies": [body] if body else [],
+        "title": snapshot.get("title"),
+        "cta_text": snapshot.get("cta_text"),
+        "link_url": snapshot.get("link_url"),
+        "ad_delivery_start_time": started_at,
+        "impressions": item.get("impressions_text"),
+        "spend": item.get("spend"),
+        "publisher_platforms": item.get("publisher_platform"),
+        "ad_snapshot_url": f"https://www.facebook.com/ads/library/?id={ad_id}" if ad_id else None,
+    }
+
+
+def fetch_ads_apify(keywords, token):
+    """Apify 액터 1회 실행으로 모든 키워드 광고 수집"""
+    headers = {"Authorization": f"Bearer {token}"}
+    run_input = {
+        "start_urls": [{"url": ad_library_url(keyword)} for keyword in keywords],
+        "max_results_per_url": APIFY_ADS_PER_KEYWORD,
+        "total_max_results": APIFY_ADS_PER_KEYWORD * len(keywords),
+    }
+    res = requests.post(
+        f"https://api.apify.com/v2/acts/{APIFY_ACTOR}/runs",
+        params={"waitForFinish": 60, "maxTotalChargeUsd": APIFY_MAX_CHARGE_USD},
+        headers=headers, json=run_input, timeout=90,
+    )
+    res.raise_for_status()
+    run = res.json()["data"]
+    deadline = time.time() + 20 * 60
+    while run.get("status") in ("READY", "RUNNING") and time.time() < deadline:
+        res = requests.get(
+            f"https://api.apify.com/v2/actor-runs/{run['id']}",
+            params={"waitForFinish": 60}, headers=headers, timeout=90,
+        )
+        res.raise_for_status()
+        run = res.json()["data"]
+    print(f"   Apify 실행 상태: {run.get('status')} / 비용: ${run.get('usageTotalUsd', 0):.3f}")
+    items = requests.get(
+        f"https://api.apify.com/v2/datasets/{run['defaultDatasetId']}/items",
+        params={"clean": "true", "format": "json"}, headers=headers, timeout=90,
+    ).json()
+    return [normalize_apify_ad(item) for item in items if isinstance(item, dict)]
+
+
 # ─────────────────────────────────────────────
 # 1. 메인 진입점
 # ─────────────────────────────────────────────
 def main():
+    APIFY_TOKEN         = os.environ.get("APIFY_TOKEN")
     RAPIDAPI_KEY        = os.environ.get("RAPIDAPI_KEY")
     GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY")
     NOTION_TOKEN        = os.environ.get("NOTION_API_TOKEN")
     NOTION_META_AD_DB_ID = os.environ.get("NOTION_META_AD_DB_ID")
     IMGBB_API_KEY       = os.environ.get("IMGBB_API_KEY")     # ← 추가 필요
 
-    if not RAPIDAPI_KEY or not GEMINI_API_KEY:
+    if not (APIFY_TOKEN or RAPIDAPI_KEY) or not GEMINI_API_KEY:
         print("❌ 에러: 필수 API 키 환경변수가 설정되지 않았습니다.")
         return
 
@@ -221,29 +297,39 @@ def main():
     )[:30]
     print(f"🚀 카테고리 키워드 {search_keywords} 메타 광고 데이터 수집 시작")
 
-    url = "https://facebook-ads-library-scraper-api.p.rapidapi.com/search/ads"
     all_collected_ads = []
-    headers = {
-        "Content-Type": "application/json",
-        "x-rapidapi-host": "facebook-ads-library-scraper-api.p.rapidapi.com",
-        "x-rapidapi-key": RAPIDAPI_KEY
-    }
-
-    for keyword in search_keywords:
-        print(f"🔍 '{keyword}' 관련 광고 수집 중...")
-        querystring = {
-            "query": keyword, "status": "ACTIVE", "country": "KR",
-            "media_type": "ALL", "sort_by": "total_impressions", "trim": "false"
-        }
+    if APIFY_TOKEN:
+        print("🔍 Apify로 광고 수집 중...")
         try:
-            response = requests.get(url, headers=headers, params=querystring)
-            response.raise_for_status()
-            ads = extract_ads(response.json())
-            all_collected_ads.extend(ads)
-            print(f"✅ '{keyword}' 수집 완료: {len(ads)}건")
+            all_collected_ads = fetch_ads_apify(search_keywords, APIFY_TOKEN)
+            print(f"✅ Apify 수집 완료: {len(all_collected_ads)}건")
         except Exception as e:
-            print(f"❌ '{keyword}' 수집 중 오류: {e}")
-            continue
+            print(f"❌ Apify 수집 중 오류: {e}")
+
+    if not all_collected_ads and RAPIDAPI_KEY:
+        print("↪️ RapidAPI로 수집 (Apify 미설정 또는 실패)")
+        url = "https://facebook-ads-library-scraper-api.p.rapidapi.com/search/ads"
+        headers = {
+            "Content-Type": "application/json",
+            "x-rapidapi-host": "facebook-ads-library-scraper-api.p.rapidapi.com",
+            "x-rapidapi-key": RAPIDAPI_KEY
+        }
+
+        for keyword in search_keywords:
+            print(f"🔍 '{keyword}' 관련 광고 수집 중...")
+            querystring = {
+                "query": keyword, "status": "ACTIVE", "country": "KR",
+                "media_type": "ALL", "sort_by": "total_impressions", "trim": "false"
+            }
+            try:
+                response = requests.get(url, headers=headers, params=querystring)
+                response.raise_for_status()
+                ads = extract_ads(response.json())
+                all_collected_ads.extend(ads)
+                print(f"✅ '{keyword}' 수집 완료: {len(ads)}건")
+            except Exception as e:
+                print(f"❌ '{keyword}' 수집 중 오류: {e}")
+                continue
 
     if not all_collected_ads:
         print("⚠️ 수집된 메타 광고 데이터가 없습니다.")
