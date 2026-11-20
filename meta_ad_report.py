@@ -9,6 +9,11 @@ from google import genai
 DEFAULT_SEARCH_KEYWORDS = [
     "코니", "무무즈", "보나츠", "베베드피노",
     "보보쇼즈", "베네베네", "데타미 프로젝트", "아프리콧 스튜디오",
+    # 2026-11 추가
+    "로토토베베", "오떨베베", "해피프린스", "호아따따",
+    "세아랑", "더로하", "모노레임", "오브마이온",
+    "피카부", "더피넛스튜디오", "메론스위치", "젤리멜로",
+    "벨리타앤보이즈",
 ]
 
 
@@ -213,7 +218,7 @@ def main():
         [keyword.strip() for keyword in configured_keywords.split(",") if keyword.strip()]
         if configured_keywords.strip()
         else DEFAULT_SEARCH_KEYWORDS
-    )[:8]
+    )[:30]
     print(f"🚀 카테고리 키워드 {search_keywords} 메타 광고 데이터 수집 시작")
 
     url = "https://facebook-ads-library-scraper-api.p.rapidapi.com/search/ads"
