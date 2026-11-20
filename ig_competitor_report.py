@@ -23,7 +23,12 @@ MY_IG_ID = "17841408849647327"
 COMPETITORS = [
     "konny_kr", "moomooz_essential", "bonats.official",
     "bebedepino", "_bobochoses_", "benebene_official",
-    "detamy_project", "apricotstudios_"
+    "detamy_project", "apricotstudios_",
+    # 2026-11 추가
+    "rototobebe", "oottbebe", "happyprince_official", "hoatatau_",
+    "se.arang_", "theloha.kr", "monoleim", "of_my_on",
+    "hi.peekaboo", "the_peanut_studio", "melonswitch_kr",
+    "jellymallow_official", "belitaandboys",
 ]
 
 
