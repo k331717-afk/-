@@ -124,7 +124,7 @@ def scrape_instagram_data_official(ig_user_id):
             for post in media_data:
                 timestamp = post.get("timestamp", "")
                 try:
-                    post_date = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).astimezone(
+                    post_date = datetime.strptime(timestamp.replace("Z", "+0000"), "%Y-%m-%dT%H:%M:%S%z").astimezone(
                         timezone(timedelta(hours=9))
                     ).date()
                 except (TypeError, ValueError):
