@@ -11,10 +11,10 @@ jobs:
 
     steps:
     - name: checkout
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: setup-python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.10'
 
@@ -25,6 +25,7 @@ jobs:
         python -m playwright install chromium --with-deps
 
     - name: run-instagram-report
+      if: ${{ !cancelled() }}
       env:
         META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
         RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
@@ -37,6 +38,7 @@ jobs:
       run: python ig_competitor_report.py
 
     - name: run-meta-ad-report
+      if: ${{ !cancelled() }}
       env:
         RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -46,6 +48,7 @@ jobs:
       run: python meta_ad_report.py
 
     - name: run-meta-weekly-report
+      if: ${{ !cancelled() }}
       env:
         META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
         META_AD_ACCOUNT_ID: ${{ secrets.META_AD_ACCOUNT_ID }}
