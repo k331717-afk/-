@@ -12,6 +12,22 @@ DEFAULT_SEARCH_KEYWORDS = [
 ]
 
 
+
+def gemini_generate(client, **kwargs):
+    """Gemini 서버 과부하(503)·한도(429) 시 잠깐 기다렸다가 최대 4번 재시도"""
+    import time
+    for attempt in range(4):
+        try:
+            return client.models.generate_content(**kwargs)
+        except Exception as e:
+            msg = str(e)
+            if attempt < 3 and any(code in msg for code in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED")):
+                wait = 15 * (2 ** attempt)
+                print(f"⏳ Gemini 일시 오류, {wait}초 후 재시도 ({attempt + 1}/3): {msg[:80]}")
+                time.sleep(wait)
+                continue
+            raise
+
 def find_first_value(data, field_names):
     if isinstance(data, dict):
         for name in field_names:
@@ -304,7 +320,7 @@ def generate_text_report(client, evidence_rows):
 - 제안 2: (구체적 카피 / 연결된 근거번호 / 기대 이유)
 """
     try:
-        ai_response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
+        ai_response = gemini_generate(client, model='gemini-2.5-flash', contents=prompt)
         try:
             report_text = ai_response.text
         except ValueError:
@@ -348,7 +364,7 @@ def generate_infographic_html(client, ads_data, report_text):
 - HTML 코드만 출력할 것. 설명 텍스트, 마크다운 코드블록(```) 절대 포함 금지.
 """
     try:
-        ai_response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
+        ai_response = gemini_generate(client, model='gemini-2.5-flash', contents=prompt)
         try:
             html_text = ai_response.text
         except ValueError:
