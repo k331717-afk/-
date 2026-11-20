@@ -753,10 +753,9 @@ def main():
     logger.info(f"🏆 Top ROAS 캠페인: {analysis['top2']['캠페인명'].tolist()}")
     logger.info(f"⚠️ Bottom ROAS 캠페인: {analysis['bottom2']['캠페인명'].tolist()}")
 
-    # Step 4: 이메일 발송
-    logger.info("Step 4/4: HTML 리포트 생성 및 이메일 발송 중...")
+    # Step 4: HTML 리포트 생성 (이메일 발송은 사용하지 않음 → 노션으로만 기록)
+    logger.info("Step 4/4: HTML 리포트 생성 중... (이메일 발송 생략)")
     html = build_html_report(df, analysis, CONFIG)
-    send_email(html, CONFIG, df)
 
     image_url = generate_openai_infographic_to_imgbb(df, analysis, CONFIG)
     if not image_url and CONFIG["imgbb_api_key"]:
