@@ -27,6 +27,22 @@ COMPETITORS = [
 ]
 
 
+
+def gemini_generate(client, **kwargs):
+    """Gemini 서버 과부하(503)·한도(429) 시 잠깐 기다렸다가 최대 4번 재시도"""
+    import time
+    for attempt in range(4):
+        try:
+            return client.models.generate_content(**kwargs)
+        except Exception as e:
+            msg = str(e)
+            if attempt < 3 and any(code in msg for code in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED")):
+                wait = 15 * (2 ** attempt)
+                print(f"⏳ Gemini 일시 오류, {wait}초 후 재시도 ({attempt + 1}/3): {msg[:80]}")
+                time.sleep(wait)
+                continue
+            raise
+
 def previous_week_range():
     today_kst = datetime.now(timezone(timedelta(hours=9))).date()
     period_end = today_kst - timedelta(days=today_kst.weekday() + 1)
@@ -210,7 +226,7 @@ def analyze_with_ai(scraped_data: str, evidence_rows) -> str:
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
+            response = gemini_generate(client, model='gemini-2.5-flash', contents=prompt)
             print("✅ AI 분석 완료!")
             return response.text
         except Exception as e:
@@ -251,7 +267,7 @@ def generate_infographic_html(analysis_text: str, scraped_data: str) -> str:
 - HTML 코드만 출력하고 설명, 마크다운 코드블록(```), 주석은 포함하지 마.
 """
     try:
-        response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+        response = gemini_generate(client, model="gemini-2.5-flash", contents=prompt)
         html_text = response.text.strip() if response.text else ""
         if html_text.startswith("```"):
             lines = html_text.split("\n")
